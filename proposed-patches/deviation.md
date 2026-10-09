@@ -109,6 +109,8 @@ Two additional `GenericMethodTests` methods cover:
 - `inferredEnclosingTypeNullnessSurvivesInnerClassIdentity`
 - `unusedTypeVariablesDoNotEraseCertifiedLambdaTargets`
 
+02 and combined 03 now also include PR #1943's unchanged #1942 JDK-model regression and a separate nullable/non-null payload control test. Both pass on 01+02; the full stack passes them with the repair visitor deleted and no new production changes. See `ISSUE-1942-VALIDATION.md`.
+
 Existing #1291, #1585, #1919/#1930, #1455, Caffeine, annotation-override, wildcard, diamond, and diagnostic tests remain. 006 renames `nestedGenericMethodRepairPreservesTopLevelNullability` to `nestedGenericMethodSubstitutionPreservesTopLevelNullability` without changing assertions.
 
 The older failed repair-disabled #1455 experiment is still useful history: it demonstrates why deletion was unsafe before 005. It does not describe the current stack, where the supplier case and full module pass with the visitor deleted.
@@ -144,6 +146,6 @@ Therefore the central rewrite and obsolete-visitor removal are delivered, but th
 ./gradlew :nullaway:buildWithNullAway --rerun-tasks --no-build-cache
 ```
 
-Final reports: **1,185 tests recorded, zero failures/errors, 21 skipped**. The exported stack was applied to a fresh worktree and matched the tested files byte-for-byte, including the visitor deletion. Independent reviews checked certification, contexts/caches, unused-target publication, and cleanup; concrete findings were repaired and tested, with no remaining P0/P1 blocker found in the reviewed paths.
+Latest reports after adding the two #1942 regression methods: **1,187 tests recorded, zero failures/errors, 21 skipped**. The exported stack was applied to a fresh worktree and matched the tested files byte-for-byte, including the visitor deletion. Independent reviews checked certification, contexts/caches, unused-target publication, and cleanup; concrete findings were repaired and tested, with no remaining P0/P1 blocker found in the reviewed paths.
 
 This document update changes documentation only. It does not claim that finite tests and static reviews prove universal soundness, compatibility, or performance. See `COMPLETION-005-006.md` for the detailed implementation/test report.

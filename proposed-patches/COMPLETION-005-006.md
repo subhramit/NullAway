@@ -106,7 +106,11 @@ It renames `nestedGenericMethodRepairPreservesTopLevelNullability` to `nestedGen
 
 General annotation-preserving substitution, metadata-copy, supertype/member, wildcard/capture, and fallback diagnostic utilities remain because they are not the obsolete #1473/#1574 visitor.
 
-## Validation
+## Latest #1942 regression validation
+
+02 and combined 03 now include PR #1943's unchanged `modeledNestedReturnAnnotationInGenericInference` regression and a separate non-null/`var`/nested-result control method. No new production changes were needed. The upstream test fails on the original baseline, passes on 01+02, and passes on this complete stack with the visitor deleted. The latest uncached full suite records **1,187 tests, zero failures/errors, 21 skipped**, and the self-check passes. Both revised export alternatives match the tested 14 changed paths byte-for-byte. See `ISSUE-1942-VALIDATION.md` for commands, independent review, and bounded conclusions.
+
+## Original 005/006 validation
 
 005 independently passed:
 

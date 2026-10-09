@@ -2,6 +2,10 @@
 
 > **Current-stage update:** 004 closes the observable array gap. 005 adds attributed shapes, explicit result certification, ten direct compiler-backed solver tests, an enclosing-type integration test, and an unused-variable lambda test; 006 physically removes the visitor/wrapper/guard after the entire repair-free suite and self-check pass. The old failed `issue1455` bypass experiment applies to the pre-005 stack. The detailed audit below remains a baseline snapshot of 01+02; see `COMPLETION-005-006.md` for current acceptance evidence.
 
+## New #1942 acceptance evidence
+
+02 and combined 03 now add `JSpecifyJDKModelsTest.modeledNestedReturnAnnotationInGenericInference` unchanged from PR #1943, plus `modeledNestedReturnInferencePreservesPayloadNullness` with non-null payload controls and negative checks after `var` and nesting. The upstream regression fails on baseline `b8e88803` and passes on 01+02 without new production changes. Both methods also pass in the repair-free final stack; the latest full module run records 1,187 tests, zero failures/errors, 21 skipped, and the self-check passes. See `ISSUE-1942-VALIDATION.md`; the counts and scope statements in the historical audit below predate these additions.
+
 ## Scope and answers
 
 Read-only audit dated 2026-10-08 of **repaired patches 01+02**, as present in `NullAway/.worktrees/final-scope`, against master `b8e88803a2bb2287c08d9f85361c9317222387d4`. The supplied `C:\Users\subhr\Downloads\issue-1932-plan.md`, current patch payloads, review reports, and GitHub API bodies/comments were inspected. This document is the only audit output; no production/test edits, patch application to disk, commits, branches, or Gradle commands were performed.

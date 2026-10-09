@@ -2,7 +2,9 @@
 
 Apply this combined patch directly to master at b8e88803 instead of applying Patches 1 and 2. Do not apply both forms.
 
-This is the complete implementation and test diff, including the repair pass. It supersedes 0003-complete-approved-solution.md, which is retained only in archive-before-repair/.
+This is the complete implementation and test diff for 01+02, including the repair pass. It supersedes 0003-complete-approved-solution.md, which is retained only in archive-before-repair/.
+
+Includes the same #1942/#1943 regression and companion controls as 02; later stages remain separate. See `ISSUE-1942-VALIDATION.md`.
 
 ```diff
 diff --git a/nullaway/src/main/java/com/uber/nullaway/generics/ConstraintSolver.java b/nullaway/src/main/java/com/uber/nullaway/generics/ConstraintSolver.java
@@ -4043,6 +4045,95 @@ index 8e63ee64..c8a2d758 100644
    private CompilationTestHelper makeHelper() {
      return makeTestHelperWithArgs(
          JSpecifyJavacConfig.withJSpecifyModeArgs(
+diff --git a/nullaway/src/test/java/com/uber/nullaway/JSpecifyJDKModelsTest.java b/nullaway/src/test/java/com/uber/nullaway/JSpecifyJDKModelsTest.java
+index 83d3f694..6cd2c4c3 100644
+--- a/nullaway/src/test/java/com/uber/nullaway/JSpecifyJDKModelsTest.java
++++ b/nullaway/src/test/java/com/uber/nullaway/JSpecifyJDKModelsTest.java
+@@ -555,6 +555,84 @@ public class JSpecifyJDKModelsTest extends NullAwayTestsBase {
+         .doTest();
+   }
+ 
++  @Test
++  public void modeledNestedReturnAnnotationInGenericInference() {
++    makeHelper()
++        .addSourceLines(
++            "Test.java",
++            """
++            import java.util.Optional;
++            import java.util.concurrent.CompletableFuture;
++            import org.jspecify.annotations.NullMarked;
++            import org.jspecify.annotations.Nullable;
++            @NullMarked
++            class Test {
++              static <T> T identity(T value) { return value; }
++              void test() {
++                CompletableFuture<@Nullable Void> direct = CompletableFuture.allOf();
++                CompletableFuture<@Nullable Void> inferred =
++                    Optional.of(CompletableFuture.allOf()).get();
++                CompletableFuture<@Nullable Void> identity = identity(CompletableFuture.allOf());
++                Optional<CompletableFuture<@Nullable Void>> optional =
++                    Optional.of(CompletableFuture.allOf());
++                CompletableFuture<@Nullable Void> nested =
++                    Optional.of(Optional.of(CompletableFuture.allOf())).get().get();
++                var future = Optional.of(CompletableFuture.allOf()).get();
++                CompletableFuture<@Nullable Void> fromVar = future;
++                // BUG: Diagnostic contains: dereferenced expression
++                future.join().toString();
++                // BUG: Diagnostic contains: incompatible types
++                CompletableFuture<Void> invalid = Optional.of(CompletableFuture.allOf()).get();
++                // BUG: Diagnostic contains: incompatible types
++                CompletableFuture<Void> invalidIdentity = identity(CompletableFuture.allOf());
++              }
++              CompletableFuture<@Nullable Void> returned() {
++                return identity(CompletableFuture.allOf());
++              }
++              CompletableFuture<Void> invalidReturn() {
++                // BUG: Diagnostic contains: incompatible types
++                return identity(CompletableFuture.allOf());
++              }
++            }
++            """)
++        .doTest();
++  }
++
++  @Test
++  public void modeledNestedReturnInferencePreservesPayloadNullness() {
++    makeHelper()
++        .addSourceLines(
++            "Test.java",
++            """
++            import java.util.Optional;
++            import java.util.concurrent.CompletableFuture;
++            import org.jspecify.annotations.NullMarked;
++            import org.jspecify.annotations.Nullable;
++            @NullMarked
++            class Test {
++              static <T> T identity(T value) { return value; }
++              void test() {
++                var nonNull = Optional.of(CompletableFuture.completedFuture("ok")).get();
++                CompletableFuture<String> valid = nonNull;
++                nonNull.join().length();
++                identity(CompletableFuture.completedFuture("ok")).join().length();
++                Optional.of(Optional.of(CompletableFuture.completedFuture("ok")))
++                    .get().get().join().length();
++                var nullable = Optional.of(CompletableFuture.allOf()).get();
++                // BUG: Diagnostic contains: incompatible types
++                CompletableFuture<Void> invalidVar = nullable;
++                var nested = Optional.of(Optional.of(CompletableFuture.allOf())).get().get();
++                CompletableFuture<@Nullable Void> validNested = nested;
++                // BUG: Diagnostic contains: incompatible types
++                CompletableFuture<Void> invalidNested = nested;
++                // BUG: Diagnostic contains: dereferenced expression
++                nested.join().toString();
++              }
++            }
++            """)
++        .doTest();
++  }
++
+   private CompilationTestHelper makeHelper() {
+     return makeTestHelperWithArgs(
+         JSpecifyJavacConfig.withJSpecifyModeArgs(List.of("-XepOpt:NullAway:OnlyNullMarked=true")));
 ```
 
 Validation: full :nullaway:test and :nullaway:buildWithNullAway passed with --rerun-tasks --no-build-cache. Independent reviews found no remaining blockers in the repaired paths; see REPAIR-REPORT.md for limitations.

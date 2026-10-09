@@ -34,7 +34,7 @@ Each Markdown patch contains a complete fenced `diff` payload; extract that bloc
 
 See [COMPLETION-005-006.md](COMPLETION-005-006.md) for the result contract, new tests, cleanup scope, validation, and limits.
 
-Both 005 independently and 006 on top passed the full main-module tests and self-check with `--rerun-tasks --no-build-cache`. Final reports: **1,185 tests, zero failures/errors, 21 skipped**.
+Both 005 independently and 006 on top passed the full main-module tests and self-check with `--rerun-tasks --no-build-cache`. Latest full-stack reports, including the #1942 regression and companion controls: **1,187 tests, zero failures/errors, 21 skipped**.
 
 Independent reviews found a missing enclosing-type constraint, which was repaired and directly tested. Final reviews found no concrete P0/P1 blockers in the changed certification/lifecycle/cleanup paths. The exported stack is checked against the tested source tree.
 
@@ -50,6 +50,7 @@ The scalar public result enum was already removed in the earlier stage. General 
 - [ISSUE-COMPLETENESS-AND-TEST-MAP.md](ISSUE-COMPLETENESS-AND-TEST-MAP.md): baseline requirements and regression map, with updates for later stages.
 - [COMPLETION-005-006.md](COMPLETION-005-006.md): current completion/removal evidence.
 - [deviation.md](deviation.md): comparison with the supplied Codex plan, including current-stage updates.
+- [ISSUE-1942-VALIDATION.md](ISSUE-1942-VALIDATION.md): unchanged PR #1943 regression, companion controls, baseline failure, and passing 02/final-stack evidence.
 - [SUPPRESSWARNINGS-AUDIT.md](SUPPRESSWARNINGS-AUDIT.md): suppression purpose and risks.
 - [REMAINING-WORK.md](REMAINING-WORK.md): historical pre-005 gates and remaining broader limits.
 - [DIAGRAM-0001-CALL-SCOPES.md](DIAGRAM-0001-CALL-SCOPES.md)
