@@ -156,3 +156,28 @@ Assisted-by: Zed (GPT-6.1 Sol)
 The old visitor patched annotations after inference when javac lost or misplaced them. The new solver path now handles the tested replacement cases, including the supplier example that previously blocked deletion. This commit removes that special-purpose repair machinery rather than adding another fallback switch. General type-copying and annotation-preservation tools remain because other parts of NullAway still need them.
 
 Diagram: [Repair lifecycle before and after](DIAGRAM-0006-REPAIR-REMOVAL.md).
+
+## PR 007
+
+### Title
+
+Preserve fixed bounds through wildcard inference
+
+### Description
+
+Defer non-null wildcard obligations until the complete root-inference graph is available, so nullable-admitting fixed bounds cannot disappear through nested calls or diamonds.
+Keep root-fixed evidence separate from structural evidence, respecting annotated formal projections without globally making parametric variables nullable.
+Report and cache deferred failures at their owning call while retaining existing contextual scalar diagnostics.
+Add eleven integration regressions and three compiler-backed solver methods, including both independently reproduced review findings, without weakening existing expectations.
+The reported #1947 case, full uncached main-module suite, and self-check pass, recording 1,201 tests with zero failures/errors and 21 skipped.
+This targets #1947 rather than importing or claiming the whole wildcard overhaul of open PR #1834.
+
+Assisted-by: Zed (GPT-6.1 Sol)
+
+### Beginner explanation
+
+A generic `T` that allows nullable instantiations is not always nullable, but a collection of `T` cannot safely go into an API that forbids null elements for every possible `T`. Wrapping the collection in another generic call must not hide that restriction. This patch waits until the calls' constraints are connected before checking it, while allowing nullable input parameters to remain independent of non-null output types. It also puts a warning on the inner call that actually violates the rule, not an innocent outer wrapper.
+
+Patch: [Fixed bounds through wildcard inference](0007-preserve-fixed-bounds-through-wildcard-inference.md).
+
+Diagram: [Deferred wildcard obligations before and after](DIAGRAM-0007-WILDCARD-OBLIGATIONS.md).

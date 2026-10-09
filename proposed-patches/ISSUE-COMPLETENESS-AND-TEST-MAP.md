@@ -2,9 +2,13 @@
 
 > **Current-stage update:** 004 closes the observable array gap. 005 adds attributed shapes, explicit result certification, ten direct compiler-backed solver tests, an enclosing-type integration test, and an unused-variable lambda test; 006 physically removes the visitor/wrapper/guard after the entire repair-free suite and self-check pass. The old failed `issue1455` bypass experiment applies to the pre-005 stack. The detailed audit below remains a baseline snapshot of 01+02; see `COMPLETION-005-006.md` for current acceptance evidence.
 
+## #1947 acceptance resolved by 007
+
+The case added in https://github.com/uber/NullAway/issues/1932#issuecomment-6080536601 is now permanently covered by patch 007: eleven `WildcardTests` methods and three direct `ConstraintSolverImplTests` methods. The four reported direct/nested failures are diagnosed without globally replacing parametric `T` with nullable-T; projection barriers, bound chains, intersection/markedness controls, models, repeated solves, exact owning sites, siblings, and suppression behavior are tested. Both independent-review findings were reproduced and fixed before export. The final uncached module suite records **1,201 tests, zero failures/errors, 21 skipped**, and self-check passes; see `ISSUE-1947-VALIDATION.md` for the full test map and bounded scope.
+
 ## New #1942 acceptance evidence
 
-02 and combined 03 now add `JSpecifyJDKModelsTest.modeledNestedReturnAnnotationInGenericInference` unchanged from PR #1943, plus `modeledNestedReturnInferencePreservesPayloadNullness` with non-null payload controls and negative checks after `var` and nesting. The upstream regression fails on baseline `b8e88803` and passes on 01+02 without new production changes. Both methods also pass in the repair-free final stack; the latest full module run records 1,187 tests, zero failures/errors, 21 skipped, and the self-check passes. See `ISSUE-1942-VALIDATION.md`; the counts and scope statements in the historical audit below predate these additions.
+02 and combined 03 now add `JSpecifyJDKModelsTest.modeledNestedReturnAnnotationInGenericInference` unchanged from PR #1943, plus `modeledNestedReturnInferencePreservesPayloadNullness` with non-null payload controls and negative checks after `var` and nesting. The upstream regression fails on baseline `b8e88803` and passes on 01+02 without new production changes. Both methods also pass in the repair-free final stack; that pre-007 full module run records 1,187 tests, zero failures/errors, 21 skipped, and the self-check passes. See `ISSUE-1942-VALIDATION.md`; the counts and scope statements in the historical audit below predate these additions.
 
 ## Scope and answers
 

@@ -2,17 +2,17 @@
 
 ## Reference and current implementation
 
-This document compares the current delivered stack through **005 and 006** with the supplied `issue-1932-plan.md`, titled “Track call-specific full-type bounds on top of issue-1919,” including its implementation stages, acceptance matrix, and risks. It also uses the supplied screenshots for context; it does not claim access to an unprovided full Codex transcript.
+This document compares the current delivered stack through **007** with the supplied `issue-1932-plan.md`, titled “Track call-specific full-type bounds on top of issue-1919,” including its implementation stages, acceptance matrix, and risks. It also uses the supplied screenshots for context; it does not claim access to an unprovided full Codex transcript.
 
 Current apply order:
 
 ```text
-01 → 02 → 004 → CODE-QUALITY-FOLLOWUP → 005 → 006
+01 → 02 → 004 → CODE-QUALITY-FOLLOWUP → 005 → 006 → 007
 ```
 
 Or replace 01+02 with combined 03. **03 combines only 01+02**, not the later stages.
 
-005 and 006 are implemented code patches. The final stack passes the main-module suite and self-check uncached with the old visitor physically deleted. Earlier documents describing an unimplemented 005 or unsafe visitor deletion record the pre-005 state, not the current result.
+005, 006, and 007 are implemented code patches. The final stack passes the main-module suite and self-check uncached with the old visitor physically deleted. Earlier documents describing an unimplemented 005 or unsafe visitor deletion record the pre-005 state, not the current result.
 
 ## Overall assessment
 
@@ -115,8 +115,15 @@ Existing #1291, #1585, #1919/#1930, #1455, Caffeine, annotation-override, wildca
 
 The older failed repair-disabled #1455 experiment is still useful history: it demonstrates why deletion was unsafe before 005. It does not describe the current stack, where the supplier case and full module pass with the visitor deleted.
 
-## Remaining limitations and unperformed plan gates
+## Additional acceptance case from the #1932 discussion — Patch 007
 
+The new case in https://github.com/uber/NullAway/issues/1932#issuecomment-6080536601 is now resolved. #1947 initially emitted none of its four expected direct/nested wildcard diagnostics on our pre-007 stack. Full-type preservation did not by itself impose the missing fixed-bound containment obligation.
+
+007 defers non-null-bounded `? extends U` obligations until root inference evidence is complete. Dedicated fixed-root lower evidence and root subtype edges preserve projected-formal barriers; fixed variables remain symbolic rather than becoming globally nullable. A distinct deferred-proof exception owns reporting and caching at the actual failing call, preserving ordinary scalar diagnostic behavior. This is an additional constraint kind, not the scalar UNCONSTRAINED marker/API approach in open PR #1834 and not a restoration of the obsolete visitor.
+
+Eleven integration methods and three direct solver methods cover the issue, projection/markedness/intersection controls, both independently reproduced review findings, evidence order, repeated solves, and modeled fixed-source bounds. See `ISSUE-1947-VALIDATION.md` for the full map and validation. The previous gap assessment is retained as historical failure evidence there, not as a remaining limitation.
+
+## Remaining limitations and unperformed plan gates
 - Raw, captured, unresolved, or feature-disabled structures may remain explicitly incomplete; they are not advertised as complete reusable substitutions.
 - Broader common-supertype/Java LUB inference remains outside this implementation. The pre-existing mixed-invariant false positive is characterized as a known limitation, not claimed correct or solved.
 - The plan also preserves javac's nominal shapes and #1455 negative expectations. Broadening candidate shapes to fix valid mixed invariant consumers needs an explicit semantics/test-policy justification, not silent removal of warnings.
@@ -132,6 +139,7 @@ Therefore the central rewrite and obsolete-visitor removal are delivered, but th
 - **#1291:** standalone 01 identity stage.
 - **#1585:** full nested type evidence developed in 02 and completed/certified for supported shapes by 005; 004 supplies observable array behavior.
 - **#1932:** broader solver rewrite, API adaptation, motivating acceptance, and obsolete-visitor removal represented across the staged stack.
+- **#1947:** new #1932 acceptance case resolved by 007, with deferred wildcard obligations and fourteen permanent regression methods.
 - **#1930:** already merged in baseline `b8e88803`; preserved and extended, not separately solved by a new patch.
 - **#1921:** unrelated merged Commons Lang dependency update.
 
@@ -146,6 +154,6 @@ Therefore the central rewrite and obsolete-visitor removal are delivered, but th
 ./gradlew :nullaway:buildWithNullAway --rerun-tasks --no-build-cache
 ```
 
-Latest reports after adding the two #1942 regression methods: **1,187 tests recorded, zero failures/errors, 21 skipped**. The exported stack was applied to a fresh worktree and matched the tested files byte-for-byte, including the visitor deletion. Independent reviews checked certification, contexts/caches, unused-target publication, and cleanup; concrete findings were repaired and tested, with no remaining P0/P1 blocker found in the reviewed paths.
+Latest full-stack reports through 007, including #1942 and fourteen #1947/review/solver regression methods: **1,201 tests recorded, zero failures/errors, 21 skipped**. The exported stack was applied to a fresh worktree and matched the tested files byte-for-byte, including the visitor deletion. Independent reviews checked certification, contexts/caches, unused-target publication, and cleanup; concrete findings were repaired and tested, with no remaining P0/P1 blocker found in the reviewed paths.
 
-This document update changes documentation only. It does not claim that finite tests and static reviews prove universal soundness, compatibility, or performance. See `COMPLETION-005-006.md` for the detailed implementation/test report.
+This document update changes documentation only. It does not claim that finite tests and static reviews prove universal soundness, compatibility, or performance. See `COMPLETION-005-006.md` and `ISSUE-1947-VALIDATION.md` for the detailed implementation/test reports.

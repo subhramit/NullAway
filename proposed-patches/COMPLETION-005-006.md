@@ -1,5 +1,7 @@
 # Implemented 005 and 006: certification and repair removal
 
+> **Current-stage update:** add patch 007 after this report's 006 stack to resolve #1947 with fourteen permanent regression methods. The latest uncached suite records **1,201 tests, zero failures/errors, 21 skipped**, and self-check passes. This document's 005/006 counts and apply order describe those earlier stages; see `ISSUE-1947-VALIDATION.md` and the main README for the current full stack.
+
 ## Delivery and order
 
 Both files are real applicable implementation patches, not design sketches:
