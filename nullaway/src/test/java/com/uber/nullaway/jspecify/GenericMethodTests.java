@@ -1872,8 +1872,8 @@ public class GenericMethodTests extends NullAwayTestsBase {
               }
               void test() {
                 // Here, javac computes the formal parameter type as Supplier<OuterT>.
-                // Our repair updates the type to Supplier<@Nullable OuterT>, matching
-                // the actual parameter, so we get no error.
+                // NullAway substitutes the inferred Supplier<@Nullable OuterT> into the declared
+                // method type, matching the actual parameter, so we get no error.
                 acceptSup(sup);
               }
               <T extends Supplier<?>> void acceptTwoSup(T supplier1, T supplier2) {
@@ -1882,7 +1882,7 @@ public class GenericMethodTests extends NullAwayTestsBase {
               Supplier<OuterT> make2() {
                 throw new RuntimeException();
               }
-              // tests that our repair computes a consistent substitution for the type variables
+              // Tests that inference computes a consistent substitution for the type variables.
               void test2() {
                 // BUG: Diagnostic contains: incompatible types: Supplier<OuterT> cannot be converted to Supplier<@Nullable OuterT>
                 acceptTwoSup(sup, sup2);
@@ -2015,8 +2015,8 @@ public class GenericMethodTests extends NullAwayTestsBase {
                 // presumably based on the @Nullable Object type argument for cache.
                 // NullAway determines the type of the actual parameter correctly as
                 // Map<Integer, CompletableFuture<Object>> (due to the @NonNull annotation on V in the signature for policy).
-                // The type repair in NestedTypeVarSubstitutionRepairVisitor fixes the javac type so we don't report
-                // an error here.
+                // Substituting the inferred types into the declared method type preserves this
+                // nested nullability, so we don't report an error here.
                 m(cache.policy().refreshes());
               }
             }""")
@@ -2024,7 +2024,7 @@ public class GenericMethodTests extends NullAwayTestsBase {
   }
 
   @Test
-  public void nestedGenericMethodRepairPreservesTopLevelNullability() {
+  public void nestedGenericMethodSubstitutionPreservesTopLevelNullability() {
     makeHelper()
         .addSourceLines(
             "Test.java",
