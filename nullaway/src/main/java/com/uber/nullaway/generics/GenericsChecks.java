@@ -58,7 +58,6 @@ import com.uber.nullaway.dataflow.AccessPathNullnessAnalysis;
 import com.uber.nullaway.dataflow.EnclosingEnvironmentNullness;
 import com.uber.nullaway.dataflow.NullnessStore;
 import com.uber.nullaway.generics.ConstraintSolver.NestedUpperBoundViolationException;
-import com.uber.nullaway.generics.ConstraintSolver.NonNullWildcardBoundViolationException;
 import com.uber.nullaway.generics.ConstraintSolver.Solution;
 import com.uber.nullaway.generics.ConstraintSolver.UnsatisfiableConstraintsException;
 import com.uber.nullaway.generics.GenericsUtils.MethodRefTypeRelationKind;
@@ -1573,11 +1572,6 @@ public final class GenericsChecks {
       return failureResult;
     } catch (UnsatisfiableConstraintsException e) {
       String inferenceFailureMessage = inferenceFailureMessage(e);
-      Tree reportingSite =
-          e instanceof NonNullWildcardBoundViolationException
-              ? castToNonNull(e.getInferenceSite())
-              : callTree;
-      VisitorState reportingState = stateForInferenceDiagnostic(reportingSite, state);
       if (config.warnOnGenericInferenceFailure()
           && callsWithReportedInferenceFailures.add(
               e.getInferenceSite() != null ? e.getInferenceSite() : callTree)) {
@@ -1587,14 +1581,14 @@ public final class GenericsChecks {
                 ErrorMessage.MessageTypes.GENERIC_INFERENCE_FAILURE, inferenceFailureMessage);
         state.reportMatch(
             errorBuilder.createErrorDescription(
-                errorMessage, analysis.buildDescription(reportingSite), reportingState, null));
+                errorMessage, analysis.buildDescription(callTree), state, null));
       }
       InferenceFailure failureResult = new InferenceFailure(inferenceFailureMessage);
       if (okToCacheInferenceResult(calledFromDataflow)) {
         invalidateMethodReferenceResults(inferenceCacheState);
-        // A deferred wildcard failure completes only its owning site; contextual scalar failures
-        // retain the established root cache policy. Independent nested calls must still be checked.
-        inferredTypeVarNullabilityForGenericCalls.put(reportingSite, failureResult);
+        // Contextual scalar contradictions complete only this root problem. Nested calls must
+        // still infer their own arguments and contexts independently.
+        inferredTypeVarNullabilityForGenericCalls.put(callTree, failureResult);
       }
       return failureResult;
     }
