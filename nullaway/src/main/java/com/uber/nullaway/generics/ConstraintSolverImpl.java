@@ -230,6 +230,15 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
 
   private int structuredBoundsMemoVersion = -1;
 
+  /** Raw path evidence, kept separate from enriched diagnostic context and solved values. */
+  private final Map<ReachableEvidenceKey, List<BoundEvidence>> reachableEvidenceMemo =
+      new LinkedHashMap<>();
+
+  private int reachableEvidenceMemoVersion = -1;
+
+  /** Distinguishes lower and upper traversals of the same structural variable graph. */
+  private record ReachableEvidenceKey(InferenceVariable variable, boolean lower) {}
+
   /**
    * Only structural evidence is memoized after preparation, never nullness or validation outcomes.
    */
@@ -979,6 +988,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         return null;
       }
       Type candidate = null;
+      Type projectionShape = null;
       for (Type resolved : resolvedSources) {
         Type evidence =
             comparisonEvidence && st.nullness == NullnessState.UNKNOWN
@@ -992,9 +1002,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
           // symbolic caller variable instead; it has no nested positions to overlay.
           projected = shape;
         } else {
+          if (projectionShape == null) {
+            projectionShape = markNestedTypesNonNull(shape);
+          }
           projected =
               TypeSubstitutionUtils.updateTypeWithInferredNullability(
-                  markNestedTypesNonNull(shape),
+                  projectionShape,
                   declaredTypeVariable,
                   Map.of(inferenceVar.typeVariable(), evidence),
                   state,
@@ -1098,6 +1111,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
             replacements.put(symbol, castToNonNull(result.get(variable)));
           }
         });
+    IdentityHashMap<Type, Type> substitutedBounds = new IdentityHashMap<>();
     for (InferenceVariable variable : vars.keySet()) {
       Type shape = javacInstantiations.get(variable);
       if (shape != null) {
@@ -1105,7 +1119,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         validateLowerAnnotationsAtShape(
             variable,
             bounds.lowerEvidence(),
-            substituteBounds(bounds.lower(), replacements),
+            substituteBounds(bounds.lower(), replacements, substitutedBounds),
             shape);
       }
     }
@@ -1368,11 +1382,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     Map<Element, Type> substitutions = new LinkedHashMap<>();
     inferenceVariables.forEach(
         (symbol, variable) -> substitutions.put(symbol, castToNonNull(result.get(variable))));
+    IdentityHashMap<Type, Type> substitutedBounds = new IdentityHashMap<>();
     for (InferenceVariable variable : result.keySet()) {
       StructuredBounds bounds = structuredBounds(variable);
       Type candidate = result.get(variable);
-      List<Type> lowerBounds = substituteBounds(bounds.lower(), substitutions);
-      List<Type> upperBounds = substituteBounds(bounds.upper(), substitutions);
+      List<Type> lowerBounds = substituteBounds(bounds.lower(), substitutions, substitutedBounds);
+      List<Type> upperBounds = substituteBounds(bounds.upper(), substitutions, substitutedBounds);
       for (Type lower : lowerBounds) {
         recordBoundRelation(
             variable, nullabilitySubtype(lower, candidate, false), incomplete, inconsistent);
@@ -1385,7 +1400,8 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         recordBoundRelation(
             variable, nullabilitySubtype(candidate, upper, false), incomplete, inconsistent);
       }
-      for (Type upper : substituteBounds(bounds.declaredUpper(), substitutions)) {
+      for (Type upper :
+          substituteBounds(bounds.declaredUpper(), substitutions, substitutedBounds)) {
         recordBoundRelation(
             variable, nullabilitySubtype(candidate, upper, false), incomplete, inconsistent);
       }
@@ -1399,13 +1415,21 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     }
   }
 
-  /** Substitutes solved fresh variables while preserving explicit occurrence annotations. */
-  private List<Type> substituteBounds(List<Type> bounds, Map<Element, Type> substitutions) {
-    List<Type> result = new ArrayList<>();
+  /**
+   * Substitutes each shared bound once for a fixed replacement map. The memo belongs to one
+   * validation phase: conflict collection excludes uncertified replacements and uses a separate
+   * memo. Identity keys preserve annotation-distinct occurrences and never outlive bound repair.
+   */
+  private List<Type> substituteBounds(
+      List<Type> bounds, Map<Element, Type> substitutions, IdentityHashMap<Type, Type> memo) {
+    List<Type> result = new ArrayList<>(bounds.size());
     for (Type bound : bounds) {
       result.add(
-          TypeSubstitutionUtils.substituteTypeVariables(
-              bound, substitutions, state.getTypes(), config));
+          memo.computeIfAbsent(
+              bound,
+              type ->
+                  TypeSubstitutionUtils.substituteTypeVariables(
+                      type, substitutions, state.getTypes(), config)));
     }
     return result;
   }
@@ -2150,10 +2174,23 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   }
 
   /**
-   * Collects root-edge evidence and its alternative path proofs to a finite, cycle-safe fixed
-   * point.
+   * Reuses completed root-edge evidence at one structural version. Provenance-only additions also
+   * change the version; enriched origins and resolved values are deliberately not cached here.
    */
   private List<BoundEvidence> collectReachableEvidence(InferenceVariable start, boolean lower) {
+    if (reachableEvidenceMemoVersion != structuredConstraintVersion) {
+      reachableEvidenceMemo.clear();
+      reachableEvidenceMemoVersion = structuredConstraintVersion;
+    }
+    return reachableEvidenceMemo.computeIfAbsent(
+        new ReachableEvidenceKey(start, lower),
+        key -> computeReachableEvidence(key.variable(), key.lower()));
+  }
+
+  /**
+   * Collects alternative path proofs to a finite, cycle-safe fixed point before publishing them.
+   */
+  private List<BoundEvidence> computeReachableEvidence(InferenceVariable start, boolean lower) {
     Map<String, BoundEvidence> result = new LinkedHashMap<>();
     Deque<InferenceVariable> worklist = new ArrayDeque<>();
     Map<InferenceVariable, SourceEvidence> pathOrigins = new LinkedHashMap<>();
