@@ -625,7 +625,7 @@ public class AccessPathNullnessPropagation
         // The CFG evaluates the location before the RHS. Only refine paths whose array and index
         // cannot have changed during operand evaluation.
         AccessPath elementPath = AccessPath.getAccessPathForNode(arrayAccessNode, state, apContext);
-        if (elementPath != null && hasFaithfullyRepresentedArrayIndices(elementPath)) {
+        if (elementPath != null) {
           updates.set(elementPath, value);
         }
       }
@@ -1484,8 +1484,8 @@ public class AccessPathNullnessPropagation
    * <p>Array writes may overlap elements reached through aliases, but distinct known integer
    * indices do not overlap. Rebinding a local or field only invalidates paths referencing that
    * symbol, including array indices and map keys. Field dependencies are conservatively matched by
-   * symbol because index paths do not encode field receivers. This is not complete alias or
-   * call-effect analysis. Callers add any known post-assignment element value after invalidation.
+   * symbol across possibly aliased receivers. This is not complete alias or call-effect analysis.
+   * Callers add any known post-assignment element value after invalidation.
    */
   private void invalidateArrayAccessPaths(
       NullnessStore store, ReadableUpdates updates, Node target) {
@@ -1515,18 +1515,6 @@ public class AccessPathNullnessPropagation
         }
       }
     }
-  }
-
-  /** Checks index fidelity; field indices omit their receiver and cannot justify refinement. */
-  private static boolean hasFaithfullyRepresentedArrayIndices(AccessPath path) {
-    for (AccessPathElement element : path.getElements()) {
-      if (element instanceof ArrayIndexElement arrayIndex
-          && !(arrayIndex.getIndex() instanceof Integer)
-          && !(arrayIndex.getIndex() instanceof Element index && !index.getKind().isField())) {
-        return false;
-      }
-    }
-    return true;
   }
 
   /**

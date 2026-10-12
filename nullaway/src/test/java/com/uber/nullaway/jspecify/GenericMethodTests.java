@@ -3157,6 +3157,232 @@ public class GenericMethodTests extends NullAwayTestsBase {
   }
 
   @Test
+  public void inferredArrayElementsUnboxedInDirectEnhancedFor() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static <T extends @Nullable Object> T pick(T first, T second) {
+                return first;
+              }
+              static void test(Integer[] nonNullElements, @Nullable Integer[] nullableElements) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable value
+                for (int element : pick(nonNullElements, nullableElements)) {}
+                // BUG: Diagnostic contains: unboxing of a @Nullable value
+                for (int element : pick(nullableElements, nonNullElements)) {}
+                for (int element : pick(nonNullElements, nonNullElements)) {}
+                // BUG: Diagnostic contains: unboxing of a @Nullable value
+                for (int element : nullableElements) {}
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void inferredArrayElementsUnboxedInVarEnhancedFor() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static <T extends @Nullable Object> T pick(T first, T second) {
+                return first;
+              }
+              static void test(Integer[] nonNullElements, @Nullable Integer[] nullableElements) {
+                var forward = pick(nonNullElements, nullableElements);
+                var reverse = pick(nullableElements, nonNullElements);
+                var nonNull = pick(nonNullElements, nonNullElements);
+                // BUG: Diagnostic contains: unboxing of a @Nullable value
+                for (int element : forward) {}
+                // BUG: Diagnostic contains: unboxing of a @Nullable value
+                for (int element : reverse) {}
+                for (int element : nonNull) {}
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void inferredArrayRecoveryDoesNotStartNestedLambdaAnalysis() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import java.util.function.Supplier;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static <T extends @Nullable Object> T supplied(Supplier<T> source) {
+                return source.get();
+              }
+              static void test(String[] nonNullElements, @Nullable String[] nullableElements) {
+                // Recovering this array during transfer visits a lambda inside another lambda
+                // whose analysis is not running. Environment setup must not start that analysis.
+                // BUG: Diagnostic contains: dereferenced expression
+                supplied(() -> supplied(() -> nullableElements))[0].length();
+                supplied(() -> supplied(() -> nonNullElements))[0].length();
+                var elements = supplied(() -> supplied(() -> nullableElements));
+                // BUG: Diagnostic contains: dereferenced expression 'elements[0]' is @Nullable
+                elements[0].length();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void inferredArrayRecoveryPreservesLambdaFlowRefinement() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import java.util.function.Supplier;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static <T extends @Nullable Object> T supplied(Supplier<T> source) {
+                return source.get();
+              }
+              static <T extends @Nullable Object> T id(T value) {
+                return value;
+              }
+              static void test(@Nullable String[] elements) {
+                supplied(() -> {
+                  if (elements[0] == null) {
+                    return "fallback";
+                  }
+                  return elements[0];
+                }).length();
+                supplied(() -> {
+                  var element = elements[0];
+                  if (element == null) {
+                    return "fallback";
+                  }
+                  return id(element);
+                }).length();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void nullableArrayElementFieldIndexGuardsHaveDistinctReceivers() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import java.util.Objects;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Index {
+                int i;
+              }
+              Index left = new Index();
+              Index right = new Index();
+              void test(@Nullable String[] a) {
+                if (a[left.i] != null) {
+                  // BUG: Diagnostic contains: dereferenced expression 'a[right.i]' is @Nullable
+                  a[right.i].length();
+                }
+                if (Objects.nonNull(a[left.i])) {
+                  // BUG: Diagnostic contains: dereferenced expression 'a[right.i]' is @Nullable
+                  a[right.i].length();
+                }
+                Objects.requireNonNull(a[left.i]);
+                // BUG: Diagnostic contains: dereferenced expression 'a[right.i]' is @Nullable
+                a[right.i].length();
+                a[left.i] = "safe";
+                // Receiver-dependent indices cannot justify even same-receiver refinement.
+                // BUG: Diagnostic contains: dereferenced expression 'a[left.i]' is @Nullable
+                a[left.i].length();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void nullableArrayElementFieldIndexRebindingInvalidatesRefinement() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Index {
+                int i;
+              }
+              Index left = new Index();
+              Index right = new Index();
+              static int index;
+              void receiverRebinding(@Nullable String[] a) {
+                if (a[left.i] != null) {
+                  left = right;
+                  // BUG: Diagnostic contains: dereferenced expression 'a[left.i]' is @Nullable
+                  a[left.i].length();
+                }
+              }
+              static void staticIndexRebinding(@Nullable String[] a) {
+                if (a[index] != null) {
+                  a[index].length();
+                  index = 1;
+                  // BUG: Diagnostic contains: dereferenced expression 'a[index]' is @Nullable
+                  a[index].length();
+                }
+                a[index] = "safe";
+                a[index].length();
+                index = 2;
+                // BUG: Diagnostic contains: dereferenced expression 'a[index]' is @Nullable
+                a[index].length();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void nullableArrayFieldRebindingInvalidatesElementRefinement() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Holder {
+                @Nullable String[] elements = new String[2];
+              }
+              static void test(Holder holder, @Nullable String[] replacement) {
+                if (holder.elements[0] != null) {
+                  holder.elements[0].length();
+                  holder.elements = replacement;
+                  // BUG: Diagnostic contains: dereferenced expression 'holder.elements[0]' is @Nullable
+                  holder.elements[0].length();
+                }
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
   public void inferredArrayElementsRemainNonNullInLegacyMode() {
     makeTestHelperWithArgs(Arrays.asList("-XepOpt:NullAway:AnnotatedPackages=com.uber"))
         .addSourceLines(
