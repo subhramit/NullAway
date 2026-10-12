@@ -1524,25 +1524,30 @@ public class TypeSubstitutionUtils {
 
     /**
      * Visits each corresponding pair in two lists of types. Returns a list of the updated types, or
-     * {@code newtypes} itself if no updates were made.
+     * {@code newtypes} itself if no updates were made. Allocates output cells only after the first
+     * changed type, copying the unchanged prefix without visiting it again.
      *
      * @param newtypes list of new types to be updated
      * @param origtypes list of original types to update from
      * @return the updated list of types, or {@code newtypes} itself if no updates were made
      */
     private List<Type> visitTypeLists(List<Type> newtypes, List<Type> origtypes) {
-      ListBuffer<Type> buf = new ListBuffer<>();
-      boolean changed = false;
+      ListBuffer<Type> buf = null;
       for (List<Type> l = newtypes, l1 = origtypes; l.nonEmpty(); l = l.tail, l1 = l1.tail) {
         Type t = l.head;
         Type t1 = l1.head;
         Type t2 = visit(t, t1);
-        buf.append(t2);
-        if (t2 != t) {
-          changed = true;
+        if (buf == null && t2 != t) {
+          buf = new ListBuffer<>();
+          for (List<Type> prefix = newtypes; prefix != l; prefix = prefix.tail) {
+            buf.append(prefix.head);
+          }
+        }
+        if (buf != null) {
+          buf.append(t2);
         }
       }
-      return changed ? buf.toList() : newtypes;
+      return buf == null ? newtypes : buf.toList();
     }
   }
 

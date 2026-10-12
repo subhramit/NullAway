@@ -6,25 +6,31 @@ import static com.google.errorprone.matchers.Description.NO_MATCH;
 
 import com.google.errorprone.BugPattern;
 import com.google.errorprone.CompilationTestHelper;
+import com.google.errorprone.ErrorProneFlags;
 import com.google.errorprone.VisitorState;
 import com.google.errorprone.bugpatterns.BugChecker;
 import com.google.errorprone.matchers.Description;
 import com.google.errorprone.util.ASTHelpers;
+import com.sun.source.tree.MethodTree;
 import com.sun.source.tree.VariableTree;
 import com.sun.tools.javac.code.BoundKind;
 import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.code.Type;
+import com.sun.tools.javac.util.List;
+import com.sun.tools.javac.util.ListBuffer;
+import com.uber.nullaway.Config;
+import com.uber.nullaway.NullAway;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 /**
- * Tests operations that copy mutable javac type variables and captured types.
+ * Tests annotation restoration and operations that copy mutable javac types.
  *
  * <p>These behaviors require types created by an active javac compilation, so each test compiles a
- * small source file with {@link TypeCopyIsolationChecker}. Special field names in that source
- * select the operation that the checker exercises; the assertions themselves run inside the checker
- * while the corresponding javac types are available.
+ * small source file with an assertion checker. Special field or method names in that source select
+ * the operation that the checker exercises; the assertions themselves run inside the checker while
+ * the corresponding javac types are available.
  */
 @RunWith(JUnit4.class)
 public class TypeSubstitutionUtilsTests {
@@ -67,6 +73,159 @@ public class TypeSubstitutionUtilsTests {
             }
             """)
         .doTest();
+  }
+
+  @Test
+  public void restoreUnchangedTypeListPreservesIdentity() {
+    compileTypeListRestoration("unchanged", -1);
+  }
+
+  @Test
+  public void restoreTypeListChangedFirstPreservesOrderAndAnnotations() {
+    compileTypeListRestoration("first", 0);
+  }
+
+  @Test
+  public void restoreTypeListChangedMiddlePreservesOrderAndAnnotations() {
+    compileTypeListRestoration("middle", 1);
+  }
+
+  @Test
+  public void restoreTypeListChangedLastPreservesOrderAndAnnotations() {
+    compileTypeListRestoration("last", 2);
+  }
+
+  /** Compiles a marked parameter list with an optional nullable annotation to restore. */
+  private void compileTypeListRestoration(String methodName, int changedPosition) {
+    CompilationTestHelper.newInstance(TypeListRestorationChecker.class, getClass())
+        .addSourceLines(
+            "Test.java",
+            "import java.lang.annotation.ElementType;",
+            "import java.lang.annotation.Target;",
+            "import org.jspecify.annotations.Nullable;",
+            "@Target(ElementType.TYPE_USE) @interface Marker {}",
+            "class Test {",
+            "  void "
+                + methodName
+                + "("
+                + (changedPosition == 0 ? "@Nullable " : "")
+                + "@Marker String first, "
+                + (changedPosition == 1 ? "@Nullable " : "")
+                + "@Marker Integer middle, "
+                + (changedPosition == 2 ? "@Nullable " : "")
+                + "@Marker Long last) {}",
+            "}")
+        .doTest();
+  }
+
+  /** Checks parameter-list restoration using compiler-attributed types and detached inputs. */
+  @BugPattern(summary = "Checks restored type list identity and order", severity = SUGGESTION)
+  public static final class TypeListRestorationChecker extends BugChecker
+      implements BugChecker.MethodTreeMatcher {
+
+    /** Restores the selected parameter and verifies identity, annotations, and input isolation. */
+    @Override
+    public Description matchMethod(MethodTree tree, VisitorState state) {
+      int changedPosition;
+      switch (tree.getName().toString()) {
+        case "unchanged" -> changedPosition = -1;
+        case "first" -> changedPosition = 0;
+        case "middle" -> changedPosition = 1;
+        case "last" -> changedPosition = 2;
+        default -> {
+          return NO_MATCH;
+        }
+      }
+      Config config =
+          new NullAway(
+                  ErrorProneFlags.builder()
+                      .putFlag("NullAway:AnnotatedPackages", "com.uber")
+                      .putFlag("NullAway:JSpecifyMode", "true")
+                      .putFlag("NullAway:JSpecifyExperimental", "true")
+                      .build())
+              .getConfig();
+      Type.MethodType source = ASTHelpers.getSymbol(tree).type.asMethodType();
+      ListBuffer<Type> targetParameters = new ListBuffer<>();
+      for (int i = 0; i < source.argtypes.size(); i++) {
+        Type parameter = source.argtypes.get(i);
+        assertThat(TypeSubstitutionUtils.hasNullableRoot(parameter, config))
+            .isEqualTo(i == changedPosition);
+        targetParameters.append(
+            i == changedPosition
+                ? TypeSubstitutionUtils.removeNullableAnnotation(parameter, config)
+                : parameter);
+      }
+      Type.MethodType target =
+          new Type.MethodType(
+              targetParameters.toList(), source.restype, source.thrown, source.tsym);
+      java.util.List<List<Type>> sourceCells = snapshotCells(source.argtypes);
+      java.util.List<List<Type>> targetCells = snapshotCells(target.argtypes);
+      java.util.List<Type> sourceHeads = java.util.List.copyOf(source.argtypes);
+      java.util.List<Type> targetHeads = java.util.List.copyOf(target.argtypes);
+
+      Type.MethodType restored =
+          (Type.MethodType)
+              TypeSubstitutionUtils.restoreExplicitNullabilityAnnotations(source, target, config);
+      if (changedPosition == -1) {
+        assertThat(restored).isSameInstanceAs(target);
+        assertThat(restored.argtypes).isSameInstanceAs(target.argtypes);
+      } else {
+        assertThat(restored).isNotSameInstanceAs(target);
+        assertThat(restored.argtypes).isNotSameInstanceAs(target.argtypes);
+      }
+      assertThat(restored.argtypes).hasSize(3);
+      assertThat(restored.restype).isSameInstanceAs(target.restype);
+      assertThat(restored.thrown).isSameInstanceAs(target.thrown);
+      for (int i = 0; i < restored.argtypes.size(); i++) {
+        Type parameter = restored.argtypes.get(i);
+        assertThat(parameter.tsym).isSameInstanceAs(sourceHeads.get(i).tsym);
+        assertThat(parameter.getAnnotationMirrors())
+            .containsExactlyElementsIn(sourceHeads.get(i).getAnnotationMirrors());
+        assertThat(TypeSubstitutionUtils.hasNullableRoot(parameter, config))
+            .isEqualTo(i == changedPosition);
+        assertThat(sourceHeads.get(i).getAnnotationMirrors()).hasSize(i == changedPosition ? 2 : 1);
+        assertThat(TypeSubstitutionUtils.hasNullableRoot(sourceHeads.get(i), config))
+            .isEqualTo(i == changedPosition);
+        assertThat(
+                targetHeads.get(i).getAnnotationMirrors().stream()
+                    .map(annotation -> annotation.type.tsym.getQualifiedName().toString())
+                    .toList())
+            .containsExactly("Marker");
+        if (i == changedPosition) {
+          assertThat(parameter).isNotSameInstanceAs(targetHeads.get(i));
+        } else {
+          assertThat(parameter).isSameInstanceAs(targetHeads.get(i));
+        }
+      }
+      assertUnmodifiedCells(source.argtypes, sourceCells, sourceHeads);
+      assertUnmodifiedCells(target.argtypes, targetCells, targetHeads);
+      assertThat(
+              TypeSubstitutionUtils.restoreExplicitNullabilityAnnotations(source, restored, config))
+          .isSameInstanceAs(restored);
+      return NO_MATCH;
+    }
+
+    /** Saves every list cell, including the terminal empty cell, without modifying the list. */
+    private static java.util.List<List<Type>> snapshotCells(List<Type> types) {
+      java.util.List<List<Type>> cells = new java.util.ArrayList<>();
+      for (List<Type> cursor = types; ; cursor = cursor.tail) {
+        cells.add(cursor);
+        if (cursor.isEmpty()) {
+          return cells;
+        }
+      }
+    }
+
+    /** Verifies that restoration changed neither the heads nor tails of an input list. */
+    private static void assertUnmodifiedCells(
+        List<Type> types, java.util.List<List<Type>> cells, java.util.List<Type> heads) {
+      assertThat(types).isSameInstanceAs(cells.get(0));
+      for (int i = 0; i < heads.size(); i++) {
+        assertThat(cells.get(i).head).isSameInstanceAs(heads.get(i));
+        assertThat(cells.get(i).tail).isSameInstanceAs(cells.get(i + 1));
+      }
+      assertThat(cells.get(heads.size())).isEmpty();
+    }
   }
 
   /**
