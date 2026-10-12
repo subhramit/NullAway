@@ -229,6 +229,14 @@ public final class GenericsChecks {
    */
   private @Nullable DataflowInferenceScope dataflowInferenceScope;
 
+  /** Query capability is independent of inference lifecycle and cache-publication eligibility. */
+  private enum DataflowQueryPolicy {
+    ALLOW_START,
+    RUNNING_ONLY
+  }
+
+  private DataflowQueryPolicy dataflowQueryPolicy = DataflowQueryPolicy.ALLOW_START;
+
   /** Indicates failed inference of nullability of type variables at a call */
   private record InferenceFailure(@SuppressWarnings("UnusedVariable") @Nullable String errorMessage)
       implements CallInferenceResult {
@@ -435,9 +443,6 @@ public final class GenericsChecks {
   private CallSite callSite(ExpressionTree tree) {
     return callSites.computeIfAbsent(tree, CallSite::new);
   }
-
-  /** Scoped array-type recovery from a transfer must not recursively start another analysis. */
-  private int arrayTypeRecoveryFromDataflowDepth = 0;
 
   /**
    * Context-resolved snapshots of all participating calls during constraint generation, including
@@ -1021,7 +1026,8 @@ public final class GenericsChecks {
    *
    * <p>The symbol check preserves support for declaration annotations and older annotation
    * encodings. Dataflow callers must pass {@code true} so incomplete inference results are not
-   * cached; type recovery uses the existing running-analysis queries rather than restarting it.
+   * cached. Transfer-driven recovery separately scopes queries to running analyses, including
+   * queries needed while resolving nested lambda types.
    *
    * @param expression the array expression
    * @param state visitor state whose path points to {@code expression}
@@ -1030,19 +1036,15 @@ public final class GenericsChecks {
    */
   public boolean isArrayElementNullable(
       ExpressionTree expression, VisitorState state, boolean calledFromDataflow) {
-    if (calledFromDataflow) {
-      arrayTypeRecoveryFromDataflowDepth++;
-    }
-    try {
-      Type arrayType = getTreeType(expression, state, calledFromDataflow);
-      Symbol arraySymbol = ASTHelpers.getSymbol(expression);
-      return NullabilityUtil.isArrayElementNullable(arrayType, config)
-          || (arraySymbol != null && NullabilityUtil.isArrayElementNullable(arraySymbol, config));
-    } finally {
-      if (calledFromDataflow) {
-        arrayTypeRecoveryFromDataflowDepth--;
-      }
-    }
+    return withDataflowQueryPolicy(
+        calledFromDataflow ? DataflowQueryPolicy.RUNNING_ONLY : DataflowQueryPolicy.ALLOW_START,
+        () -> {
+          Type arrayType = getTreeType(expression, state, calledFromDataflow);
+          Symbol arraySymbol = ASTHelpers.getSymbol(expression);
+          return NullabilityUtil.isArrayElementNullable(arrayType, config)
+              || (arraySymbol != null
+                  && NullabilityUtil.isArrayElementNullable(arraySymbol, config));
+        });
   }
 
   /**
@@ -3063,9 +3065,7 @@ public final class GenericsChecks {
         // cases it does not handle
         return;
       }
-      argumentType =
-          refineArgumentTypeWithDataflow(
-              argumentType, rhsExpr, state, state.getPath(), calledFromDataflow);
+      argumentType = refineArgumentTypeWithDataflow(argumentType, rhsExpr, state, state.getPath());
       solver.addSubtypeConstraint(
           argumentType, lhsType, false, new SourceOrigin(rhsExpr, ownerSite, argumentType));
     }
@@ -3604,15 +3604,10 @@ public final class GenericsChecks {
    * @param expr the expression tree
    * @param state the visitor state
    * @param path relevant tree path if available and possibly distinct from {@code state.getPath()}
-   * @param calledFromDataflow whether refinement must avoid starting a new analysis from a transfer
    * @return the refined type of the expression
    */
   private Type refineArgumentTypeWithDataflow(
-      Type exprType,
-      ExpressionTree expr,
-      VisitorState state,
-      @Nullable TreePath path,
-      boolean calledFromDataflow) {
+      Type exprType, ExpressionTree expr, VisitorState state, @Nullable TreePath path) {
     if (!shouldRunDataflowForExpression(exprType, expr)) {
       return exprType;
     }
@@ -3627,10 +3622,12 @@ public final class GenericsChecks {
     if (enclosingPath == null) {
       return exprType;
     }
-    // If the expression is inside a lambda, we need to ensure that the environment mapping for
-    // the lambda is set up so that dataflow analysis can be run within the lambda body
+    // Running-only queries must not set up lambda environments: doing so can start an enclosing
+    // analysis before we even query the expression. A running lambda already has its environment.
+    // Other queries retain lambda-local refinement, even during dataflow-driven inference.
+    boolean runningOnly = dataflowQueryPolicy == DataflowQueryPolicy.RUNNING_ONLY;
     boolean enclosingIsLambda = enclosingPath.getLeaf() instanceof LambdaExpressionTree;
-    if (enclosingIsLambda) {
+    if (!runningOnly && enclosingIsLambda) {
       TreePath methodEnclosingLambda =
           NullabilityUtil.findEnclosingMethodOrLambdaOrInitializer(enclosingPath);
       if (methodEnclosingLambda == null) {
@@ -3645,9 +3642,10 @@ public final class GenericsChecks {
       // dataflow analysis is already running, so just get the current dataflow value for the
       // argument
       refinedNullness = nullnessAnalysis.getNullnessFromRunning(exprPath, state.context);
-    } else if (calledFromDataflow && arrayTypeRecoveryFromDataflowDepth > 0) {
-      // Array type recovery inside a transfer must not start another dataflow instance.
-      return exprType;
+    } else if (runningOnly) {
+      // Retain the declared-root fallback as an observed input of the scoped inference cache.
+      // A later running-analysis query may have a different value and must invalidate that result.
+      refinedNullness = null;
     } else {
       refinedNullness =
           withDataflowInferenceScope(
@@ -3677,6 +3675,24 @@ public final class GenericsChecks {
               : getSyntheticNonNullAnnotType(state));
     }
     return updateTypeWithNullness(state, exprType, refinedNullness);
+  }
+
+  /**
+   * Scopes query capabilities without changing inference lifecycle or publication eligibility.
+   * Nested scopes cannot relax an enclosing running-only restriction; restoration also covers
+   * failures during type recovery or constraint generation.
+   */
+  private <T extends @Nullable Object> T withDataflowQueryPolicy(
+      DataflowQueryPolicy policy, java.util.function.Supplier<T> action) {
+    DataflowQueryPolicy previous = dataflowQueryPolicy;
+    if (previous != DataflowQueryPolicy.RUNNING_ONLY) {
+      dataflowQueryPolicy = policy;
+    }
+    try {
+      return action.get();
+    } finally {
+      dataflowQueryPolicy = previous;
+    }
   }
 
   /**
