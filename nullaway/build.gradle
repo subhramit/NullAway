@@ -160,7 +160,7 @@ tasks.withType(JavaCompile).configureEach {
 // Forward the property to every compatibility test JVM and track it as a Gradle test input.
 tasks.withType(Test).configureEach {
     systemProperty 'nullaway.balancedInferenceStress',
-            providers.gradleProperty('balancedInferenceStress').orElse('false').get()
+    providers.gradleProperty('balancedInferenceStress').orElse('false').get()
 }
 
 // Create a task to test with the oldest supported version of Error Prone
