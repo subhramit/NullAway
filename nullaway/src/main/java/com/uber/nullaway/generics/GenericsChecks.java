@@ -4705,7 +4705,10 @@ public final class GenericsChecks {
     return com.sun.tools.javac.util.List.from(types);
   }
 
-  /** Resolves a signature with receiver observations owned before any scoped cache lookup. */
+  /**
+   * Reuses completed signatures before resolution, replaying validated scoped receiver inputs into
+   * the current request. Misses still resolve receivers before generating inference constraints.
+   */
   private Type.MethodType getResolvedCallSignature(
       ExpressionTree tree,
       @Nullable TreePath path,
@@ -4713,12 +4716,24 @@ public final class GenericsChecks {
       boolean calledFromDataflow) {
     return withDataflowInferenceInputs(
         calledFromDataflow,
-        () ->
-            getResolvedCallSignature(
-                callSite(tree).resolve(path, state, calledFromDataflow),
-                path,
-                state,
-                calledFromDataflow));
+        () -> {
+          CallInferenceResult cached = getDataflowInferenceOutcome(tree, state, calledFromDataflow);
+          if (cached == null) {
+            cached = inferredTypeVarNullabilityForGenericCalls.get(tree);
+          }
+          if (cached instanceof InferenceSuccess complete) {
+            InferenceCall completedCall = complete.calls().get(tree);
+            if (completedCall != null) {
+              return completedCall.signature;
+            }
+          }
+          // Resolution can re-enter inference, so retain the slow path's later cache lookup.
+          return getResolvedCallSignature(
+              callSite(tree).resolve(path, state, calledFromDataflow),
+              path,
+              state,
+              calledFromDataflow);
+        });
   }
 
   /**
