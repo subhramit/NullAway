@@ -1921,7 +1921,12 @@ public final class GenericsChecks {
       VisitorState state) {
     List<Symbol.TypeVariableSymbol> variables = getCallTypeParameters(call);
     Map<Element, Type> shapes =
-        getJavacInstantiationsForCall(call, executableType, variables, state);
+        getJavacInstantiationsForCall(
+            call,
+            executableType,
+            variables,
+            getInstantiatedUpperBounds(executableType, variables),
+            state);
     Map<Element, Type> diagnosticTypes = result.inferredTypesForSite(call);
     for (Symbol.TypeVariableSymbol variable : variables) {
       Type shape = shapes.get(variable);
@@ -2522,15 +2527,16 @@ public final class GenericsChecks {
   /**
    * Recovers Java type shapes from javac attribution independently of NullAway's annotated
    * evidence. Diamond class variables also occur in the constructed type, even when absent from
-   * parameters.
+   * parameters. Bound-only fallback uses the current request's unfiltered instantiated bounds,
+   * including variables whose declarations are not nullness-marked.
    */
   private Map<Element, Type> getJavacInstantiationsForCall(
       ExpressionTree call,
       Type.MethodType declaration,
       List<Symbol.TypeVariableSymbol> variables,
+      Map<Element, Type> instantiatedBounds,
       VisitorState state) {
     Map<Element, Type> result = callSite(call).javacInstantiations(declaration, state);
-    Map<Element, Type> instantiatedBounds = getInstantiatedUpperBounds(declaration, variables);
     for (Symbol.TypeVariableSymbol variable : variables) {
       if (result.containsKey(variable)) {
         continue;
@@ -2542,13 +2548,9 @@ public final class GenericsChecks {
           instantiatedBounds.getOrDefault(variable, ((Type.TypeVar) variable.type).getUpperBound());
       Type substitutedBound =
           TypeSubstitutionUtils.substituteTypeVariables(bound, result, state.getTypes(), config);
-      boolean unresolved = false;
-      for (Symbol.TypeVariableSymbol peer : variables) {
-        TypeVarWithSymbolCollector references = new TypeVarWithSymbolCollector(peer);
-        substitutedBound.accept(references, null);
-        unresolved |= !references.getMatches().isEmpty();
-      }
-      if (!unresolved && !(substitutedBound instanceof Type.TypeVar)) {
+      TypeVarWithSymbolCollector references = new TypeVarWithSymbolCollector(Set.copyOf(variables));
+      substitutedBound.accept(references, null);
+      if (references.getMatches().isEmpty() && !(substitutedBound instanceof Type.TypeVar)) {
         // A variable absent from the executable signature cannot affect observable call types.
         // Its non-recursive bound is a valid representative instantiation; root defaults remain
         // the solver's responsibility. Recursive or unresolved bounds remain explicitly incomplete.
@@ -2560,16 +2562,26 @@ public final class GenericsChecks {
 
   /**
    * Finds receiver/class-substituted upper bounds for inferred variables occurring in an executable
-   * type. Variables absent from the executable type use their declaration bounds in the solver.
+   * type in one traversal, retaining each symbol's first occurrence and the requested variable
+   * order. Variables absent from the executable type use their declaration bounds in the solver.
+   * All state belongs to this request, so changed receiver and peer bounds are observed anew.
    */
   private Map<Element, Type> getInstantiatedUpperBounds(
       Type.MethodType executableType, List<Symbol.TypeVariableSymbol> typeVariables) {
     Map<Element, Type> result = new LinkedHashMap<>();
+    if (typeVariables.isEmpty()) {
+      return result;
+    }
+    TypeVarWithSymbolCollector collector =
+        new TypeVarWithSymbolCollector(Set.copyOf(typeVariables));
+    executableType.accept(collector, null);
+    Map<Element, Type.TypeVar> firstOccurrences = new LinkedHashMap<>();
+    for (Type.TypeVar occurrence : collector.getMatches()) {
+      firstOccurrences.putIfAbsent(occurrence.asElement(), occurrence);
+    }
     for (Symbol.TypeVariableSymbol typeVariable : typeVariables) {
-      TypeVarWithSymbolCollector collector = new TypeVarWithSymbolCollector(typeVariable);
-      executableType.accept(collector, null);
-      if (!collector.getMatches().isEmpty()) {
-        Type.TypeVar instantiatedUse = collector.getMatches().iterator().next();
+      Type.TypeVar instantiatedUse = firstOccurrences.get(typeVariable);
+      if (instantiatedUse != null) {
         Type declaredUpperBound = ((Type.TypeVar) typeVariable.type).getUpperBound();
         Type instantiatedUpperBound =
             TypeSubstitutionUtils.restoreExplicitNullabilityAnnotations(
@@ -2678,14 +2690,16 @@ public final class GenericsChecks {
         variablesWithNullnessMarkedBounds(callTypeParameters, state);
     Map<Element, Type> instantiatedUpperBounds =
         getInstantiatedUpperBounds(methodType, callTypeParameters);
-    instantiatedUpperBounds.keySet().retainAll(variablesWithNullnessMarkedBounds);
+    Map<Element, Type> markedUpperBounds = new LinkedHashMap<>(instantiatedUpperBounds);
+    markedUpperBounds.keySet().retainAll(variablesWithNullnessMarkedBounds);
     Map<Element, Type.TypeVar> inferenceVariables =
         solver.registerInferenceVariables(
             callTree,
             callTypeParameters,
-            instantiatedUpperBounds,
+            markedUpperBounds,
             variablesWithNullnessMarkedBounds,
-            getJavacInstantiationsForCall(callTree, methodType, callTypeParameters, state));
+            getJavacInstantiationsForCall(
+                callTree, methodType, callTypeParameters, instantiatedUpperBounds, state));
     inferenceCacheState.recordVariables(callTree, inferenceVariables);
     Map<Tree, InferenceCall> callTypesForPolyArgs = callTypesForPolyArguments;
     if (callTypesForPolyArgs != null) {
