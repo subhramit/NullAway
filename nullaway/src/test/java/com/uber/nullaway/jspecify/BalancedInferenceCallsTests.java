@@ -6,17 +6,25 @@ import com.uber.nullaway.generics.JSpecifyJavacConfig;
 import java.util.List;
 import org.junit.Test;
 
-/** Correctness and measurable workload coverage for balanced generic inference problems. */
+/**
+ * End-to-end regressions for balanced generic inference problems.
+ *
+ * <p>Large graph coverage lives in {@link
+ * com.uber.nullaway.generics.BalancedConstraintSolverTests}. Keeping these source trees smaller
+ * avoids spending most of the regression time in javac's own poly-expression inference. To profile
+ * the original 255/511-call sources, run {@code ./gradlew :nullaway:test --tests
+ * '*BalancedInferenceCallsTests' -PbalancedInferenceStress=true}.
+ */
 public class BalancedInferenceCallsTests extends NullAwayTestsBase {
 
   @Test
-  public void nullableListLeaves255Calls() {
-    checkNullableListLeaves(255);
+  public void nullableListLeaves() {
+    checkNullableListLeaves(Boolean.getBoolean("nullaway.balancedInferenceStress") ? 255 : 31);
   }
 
   @Test
-  public void nullableListLeaves511Calls() {
-    checkNullableListLeaves(511);
+  public void largerNullableListLeaves() {
+    checkNullableListLeaves(Boolean.getBoolean("nullaway.balancedInferenceStress") ? 511 : 63);
   }
 
   @Test
