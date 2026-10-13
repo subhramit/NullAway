@@ -256,9 +256,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   /** Diagnostic annotation sources selected independently of structured candidate construction. */
   private final Map<InferenceVariable, Type> declarationBoundFallbacks = new LinkedHashMap<>();
 
-  /** Active directed type pairs, separated by comparison mode and compared by identity. */
+  /** Active directed type pairs; empty mode maps retain their storage, never completed pairs. */
   private final Map<String, IdentityHashMap<Type, Set<Type>>> activeBoundComparisons =
       new LinkedHashMap<>();
+
+  /** Empty identity sets recycled across comparisons, bounded by peak active first-type entries. */
+  private final Deque<Set<Type>> unusedBoundComparisonSets = new ArrayDeque<>();
 
   /** Stable per-run IDs for symbols appearing in structural fingerprints. */
   private final IdentityHashMap<Symbol, Integer> fingerprintSymbolIds = new IdentityHashMap<>();
@@ -2647,25 +2650,35 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         : BoundRelation.SATISFIED;
   }
 
-  /** Starts a comparison unless the same directed identity pair and mode is already active. */
+  /**
+   * Starts a directed identity comparison unless the same pair and mode is already active. Reuses
+   * empty guard storage without retaining any previous comparison's types or outcome.
+   */
   private boolean beginBoundComparison(String mode, Type first, Type second) {
     IdentityHashMap<Type, Set<Type>> pairs =
-        activeBoundComparisons.computeIfAbsent(mode, unused -> new IdentityHashMap<>());
-    Set<Type> seconds =
-        pairs.computeIfAbsent(first, unused -> Collections.newSetFromMap(new IdentityHashMap<>()));
+        activeBoundComparisons.computeIfAbsent(mode, unused -> new IdentityHashMap<>(4));
+    Set<Type> seconds = pairs.get(first);
+    if (seconds == null) {
+      seconds = unusedBoundComparisonSets.pollFirst();
+      if (seconds == null) {
+        seconds = Collections.newSetFromMap(new IdentityHashMap<>(2));
+      }
+      pairs.put(first, seconds);
+    }
     return seconds.add(second);
   }
 
-  /** Removes an active comparison after all its independent positions have been visited. */
+  /**
+   * Removes a comparison on unwind, recycling a set only after its last active pair is gone. Empty
+   * mode maps retain capacity; neither these maps nor pooled sets retain references to prior types.
+   */
   private void endBoundComparison(String mode, Type first, Type second) {
     IdentityHashMap<Type, Set<Type>> pairs = castToNonNull(activeBoundComparisons.get(mode));
     Set<Type> seconds = castToNonNull(pairs.get(first));
     seconds.remove(second);
     if (seconds.isEmpty()) {
       pairs.remove(first);
-    }
-    if (pairs.isEmpty()) {
-      activeBoundComparisons.remove(mode);
+      unusedBoundComparisonSets.addFirst(seconds);
     }
   }
 
