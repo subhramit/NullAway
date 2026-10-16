@@ -2271,6 +2271,44 @@ public class WildcardTests extends NullAwayTestsBase {
         .doTest();
   }
 
+  @Test
+  public void issue1947ModeledFixedBoundThroughWildcard() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.NonNull;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Box<E extends @Nullable Object> {}
+              static <E extends @Nullable Object> Box<E> id(Box<E> box) { return box; }
+              static <U> void requireNonNull(Box<? extends U> box) {}
+              static <T> void modeledWildcardSource(T value) {
+                Box<T> box = new Box<>();
+                // BUG: Diagnostic contains: inference failure
+                requireNonNull(box);
+                // BUG: Diagnostic contains: inference failure
+                requireNonNull(id(box));
+                // BUG: Diagnostic contains: inference failure
+                requireNonNull(id(id(box)));
+                Box<@NonNull T> projected = new Box<>();
+                requireNonNull(projected);
+                requireNonNull(id(projected));
+              }
+              static <T> void unmodeledWildcardSource(T value) {
+                Box<T> box = new Box<>();
+                requireNonNull(box);
+                requireNonNull(id(box));
+                requireNonNull(id(id(box)));
+              }
+            }
+            """)
+        .doTest();
+  }
+
   private CompilationTestHelper makeHelper() {
     return makeTestHelperWithArgs(
         JSpecifyJavacConfig.withJSpecifyModeArgs(
