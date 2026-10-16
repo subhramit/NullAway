@@ -354,6 +354,94 @@ public class FullTypeInferenceRegressionTests extends NullAwayTestsBase {
         .doTest();
   }
 
+  @Test
+  public void capturedArrayInferenceKeepsRootAndComponentNullabilitySeparate() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Buffer<E> {
+                E @Nullable [] nullableRoot;
+                @Nullable E [] nullableComponent;
+                @Nullable E @Nullable [] nullableBoth;
+                Buffer(E @Nullable [] root, @Nullable E [] component,
+                    @Nullable E @Nullable [] both) {
+                  nullableRoot = root;
+                  nullableComponent = component;
+                  nullableBoth = both;
+                }
+              }
+              static <T> T requireNonNull(@Nullable T value) {
+                throw new UnsupportedOperationException();
+              }
+              void test(Buffer<?> buffer) {
+                // Use contextual array types rather than relying on var array-component flow.
+                Object[] root = requireNonNull(buffer.nullableRoot);
+                root.toString();
+                root[0].toString();
+                @Nullable Object[] component = requireNonNull(buffer.nullableComponent);
+                component.toString();
+                // BUG: Diagnostic contains: dereferenced expression
+                component[0].toString();
+                @Nullable Object[] both = requireNonNull(buffer.nullableBoth);
+                both.toString();
+                // BUG: Diagnostic contains: dereferenced expression
+                both[0].toString();
+                requireNonNull(buffer.nullableBoth).toString();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void receiverSubstitutionKeepsNullableOccurrencesSeparate() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Pair<A extends @Nullable Object, B extends @Nullable Object> {
+                A first() { throw new UnsupportedOperationException(); }
+                B second() { throw new UnsupportedOperationException(); }
+              }
+              static class Receiver<E extends @Nullable Object> {
+                <T extends Pair<E, @Nullable E>> T identity(T value) { return value; }
+              }
+              void test(Receiver<String> nonNullReceiver,
+                  Receiver<@Nullable String> nullableReceiver,
+                  Pair<String, @Nullable String> mixed, Pair<String, String> nonNull,
+                  Pair<@Nullable String, @Nullable String> nullable) {
+                var first = nonNullReceiver.identity(mixed);
+                first.first().length();
+                // BUG: Diagnostic contains: dereferenced expression
+                first.second().length();
+                var second = nullableReceiver.identity(nullable);
+                // BUG: Diagnostic contains: dereferenced expression
+                second.first().length();
+                // BUG: Diagnostic contains: dereferenced expression
+                second.second().length();
+                var repeated = nonNullReceiver.identity(mixed);
+                repeated.first().length();
+                // BUG: Diagnostic contains: dereferenced expression
+                repeated.second().length();
+                // BUG: Diagnostic contains: incompatible types
+                nonNullReceiver.identity(nullable);
+                // BUG: Diagnostic contains: incompatible types
+                nonNullReceiver.identity(nonNull);
+              }
+            }
+            """)
+        .doTest();
+  }
+
   /** Creates a helper for nullness-marked generic inference tests. */
   private CompilationTestHelper makeHelper() {
     return makeTestHelperWithArgs(

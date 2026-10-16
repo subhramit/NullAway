@@ -3119,7 +3119,6 @@ public final class GenericsChecks {
                   memberReferenceTree,
                   ownerSite,
                   referencedMethodTypeIsSubtype ? subtype : supertype));
-
         });
   }
 

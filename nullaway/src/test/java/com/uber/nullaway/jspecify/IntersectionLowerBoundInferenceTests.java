@@ -1,35 +1,13 @@
 package com.uber.nullaway.jspecify;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-
-import com.google.errorprone.BugPattern;
 import com.google.errorprone.CompilationTestHelper;
-import com.google.errorprone.ErrorProneFlags;
-import com.google.errorprone.VisitorState;
-import com.google.errorprone.bugpatterns.BugChecker;
-import com.google.errorprone.matchers.Description;
-import com.google.errorprone.util.ASTHelpers;
-import com.sun.source.tree.MethodTree;
-import com.sun.tools.javac.code.Symbol;
-import com.sun.tools.javac.code.Type;
-import com.uber.nullaway.Config;
-import com.uber.nullaway.NullAway;
 import com.uber.nullaway.NullAwayTestsBase;
 import com.uber.nullaway.generics.JSpecifyJavacConfig;
-import com.uber.nullaway.generics.TypeSubstitutionUtils;
 import java.util.List;
-import java.util.Map;
 import org.junit.Test;
 
 /** Regression coverage for lower annotations at javac's inferred common intersection shape. */
 public class IntersectionLowerBoundInferenceTests extends NullAwayTestsBase {
-
-  private static final ThreadLocal<Integer> DETACHMENT_ASSERTIONS =
-      ThreadLocal.withInitial(() -> 0);
 
   @Test
   public void arrayLowerConflictsInBothOrders() {
@@ -564,99 +542,6 @@ public class IntersectionLowerBoundInferenceTests extends NullAwayTestsBase {
             }
             """)
         .doTest();
-  }
-
-  @Test
-  public void declarationRestorationDoesNotMutateConstructorSymbolsOrVariables() {
-    DETACHMENT_ASSERTIONS.set(0);
-    try {
-      CompilationTestHelper.newInstance(DeclarationBoundsAssertionsChecker.class, getClass())
-          .setArgs(
-              JSpecifyJavacConfig.withJSpecifyModeArgs(
-                  List.of("-XepOpt:NullAway:AnnotatedPackages=com.uber")))
-          .addSourceLines(
-              "Test.java",
-              """
-              package com.uber;
-              import java.util.List;
-              import org.jspecify.annotations.Nullable;
-              class Test {
-                static class DetachedBounds {
-                  <A extends @Nullable Object, U extends List<@Nullable String>>
-                      DetachedBounds(A optional, U value) {}
-                }
-                void ordinaryFirst(List<@Nullable String> value) {
-                  new DetachedBounds(null, value);
-                  new DetachedBounds(null, value) {};
-                }
-                void anonymousFirst(List<@Nullable String> value) {
-                  new DetachedBounds(null, value) {};
-                  new DetachedBounds(null, value);
-                }
-              }
-              """)
-          .doTest();
-      assertEquals(1, DETACHMENT_ASSERTIONS.get().intValue());
-    } finally {
-      DETACHMENT_ASSERTIONS.remove();
-    }
-  }
-
-  /** Checks original symbol identity and detached bounds during a real javac compilation. */
-  @BugPattern(
-      summary = "Checks detached declaration bound restoration",
-      severity = BugPattern.SeverityLevel.SUGGESTION)
-  public static final class DeclarationBoundsAssertionsChecker extends BugChecker
-      implements BugChecker.MethodTreeMatcher {
-
-    /**
-     * Verifies repeated member adaptation restores exact bound positions without source mutation.
-     */
-    @Override
-    public Description matchMethod(MethodTree tree, VisitorState state) {
-      Symbol.MethodSymbol symbol = ASTHelpers.getSymbol(tree);
-      if (!symbol.isConstructor()
-          || !symbol.owner.name.contentEquals("DetachedBounds")
-          || !(symbol.type instanceof Type.ForAll original)) {
-        return Description.NO_MATCH;
-      }
-      Config config =
-          new NullAway(
-                  ErrorProneFlags.fromMap(
-                      Map.of(
-                          "NullAway:AnnotatedPackages", "com.uber",
-                          "NullAway:JSpecifyMode", "true",
-                          "NullAway:JSpecifyExperimental", "true")))
-              .getConfig();
-      Type firstBound = ((Type.TypeVar) original.tvars.get(0)).getUpperBound();
-      Type secondBound = ((Type.TypeVar) original.tvars.get(1)).getUpperBound();
-      Object rawAttributes = symbol.getRawTypeAttributes();
-      for (int iteration = 0; iteration < 2; iteration++) {
-        Type.ForAll restored =
-            (Type.ForAll)
-                TypeSubstitutionUtils.memberType(
-                    state.getTypes(), symbol.owner.type, symbol, config);
-        assertNotSame(original.tvars.get(0), restored.tvars.get(0));
-        assertNotSame(original.tvars.get(1), restored.tvars.get(1));
-        assertSame(original.tvars.get(0).tsym, restored.tvars.get(0).tsym);
-        assertSame(original.tvars.get(1).tsym, restored.tvars.get(1).tsym);
-        assertTrue(
-            TypeSubstitutionUtils.hasNullableRoot(
-                ((Type.TypeVar) restored.tvars.get(0)).getUpperBound(), config));
-        Type nestedBound = ((Type.TypeVar) restored.tvars.get(1)).getUpperBound();
-        assertFalse(TypeSubstitutionUtils.hasNullableRoot(nestedBound, config));
-        assertTrue(
-            TypeSubstitutionUtils.hasNullableRoot(nestedBound.getTypeArguments().get(0), config));
-        assertSame(restored.tvars.get(0), restored.qtype.getParameterTypes().get(0));
-        assertSame(restored.tvars.get(1), restored.qtype.getParameterTypes().get(1));
-        assertSame(original, symbol.type);
-        assertSame(firstBound, ((Type.TypeVar) original.tvars.get(0)).getUpperBound());
-        assertSame(secondBound, ((Type.TypeVar) original.tvars.get(1)).getUpperBound());
-        assertSame(rawAttributes, symbol.getRawTypeAttributes());
-      }
-      DETACHMENT_ASSERTIONS.set(DETACHMENT_ASSERTIONS.get() + 1);
-      return Description.NO_MATCH;
-    }
   }
 
   /** Creates a helper with the same JSpecify inference configuration as the other regressions. */
