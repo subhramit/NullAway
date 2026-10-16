@@ -2850,6 +2850,48 @@ public class GenericMethodTests extends NullAwayTestsBase {
   }
 
   @Test
+  public void unmarkedBoundOnlyVariablesPreserveReceiverInstantiations() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import java.util.List;
+            import org.jspecify.annotations.NonNull;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            import org.jspecify.annotations.NullUnmarked;
+            @NullMarked
+            class Test {
+              @NullUnmarked
+              static class Receiver<E> {
+                <T extends List<E>, U extends T, R extends Comparable<R>, D extends List<R>>
+                    @NonNull U probe(@NonNull U value) { return value; }
+              }
+              static void acceptsNonNull(List<String> values) {}
+              static void acceptsNullable(List<@Nullable String> values) {}
+              static void test(Receiver<@Nullable String> nullableReceiver,
+                  Receiver<String> nonNullReceiver, List<@Nullable String> nullableValues,
+                  List<String> nonNullValues) {
+                var nullable = nullableReceiver.probe(nullableValues);
+                acceptsNullable(nullable);
+                // BUG: Diagnostic contains: incompatible types
+                acceptsNonNull(nullable);
+                // BUG: Diagnostic contains: dereferenced expression
+                nullable.get(0).length();
+                var nonNull = nonNullReceiver.probe(nonNullValues);
+                acceptsNonNull(nonNull);
+                nonNull.get(0).length();
+                var again = nullableReceiver.probe(nullableValues);
+                acceptsNullable(again);
+                // BUG: Diagnostic contains: dereferenced expression
+                again.get(0).length();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
   public void arrayDeclarationBoundPreservesNestedNullnessThroughSubtyping() {
     makeHelper()
         .addSourceLines(

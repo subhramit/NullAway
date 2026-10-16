@@ -9,11 +9,11 @@ import org.junit.Test;
 /**
  * End-to-end regressions for balanced generic inference problems.
  *
- * <p>Large graph coverage lives in {@link
- * com.uber.nullaway.generics.BalancedConstraintSolverTests}. Keeping these source trees smaller
- * avoids spending most of the regression time in javac's own poly-expression inference. To profile
- * the original 255/511-call sources, run {@code ./gradlew :nullaway:test --tests
- * '*BalancedInferenceCallsTests' -PbalancedInferenceStress=true}.
+ * <p>Routine tests use 31/63-call expressions to avoid spending most of the regression time in
+ * javac's own poly-expression inference. Larger workloads also run through NullAway rather than
+ * directly inspecting solver state or javac types. To profile the original 255/511-call sources,
+ * run {@code ./gradlew :nullaway:test --tests '*BalancedInferenceCallsTests'
+ * -PbalancedInferenceStress=true}.
  */
 public class BalancedInferenceCallsTests extends NullAwayTestsBase {
 
