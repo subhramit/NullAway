@@ -27,7 +27,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -250,39 +249,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   /** Diagnostic annotation sources selected independently of structured candidate construction. */
   private final Map<InferenceVariable, Type> declarationBoundFallbacks = new LinkedHashMap<>();
 
-  /** Active directed type pairs, separated by comparison mode and compared by identity. */
-  private final Set<ActiveBoundComparison> activeBoundComparisons = new HashSet<>();
+  /** Active directed type pairs; empty mode maps retain their storage, never completed pairs. */
+  private final Map<String, IdentityHashMap<Type, Set<Type>>> activeBoundComparisons =
+      new LinkedHashMap<>();
 
-  /**
-   * One active comparison. Types are compared by identity, so equal but distinct javac types are
-   * separate entries, as with an identity map.
-   */
-  private static final class ActiveBoundComparison {
-    private final String mode;
-    private final Type first;
-    private final Type second;
-
-    ActiveBoundComparison(String mode, Type first, Type second) {
-      this.mode = mode;
-      this.first = first;
-      this.second = second;
-    }
-
-    @Override
-    @SuppressWarnings({"ReferenceEquality", "TypeEquals"})
-    public boolean equals(@Nullable Object o) {
-      return o instanceof ActiveBoundComparison other
-          && first == other.first
-          && second == other.second
-          && mode.equals(other.mode);
-    }
-
-    @Override
-    public int hashCode() {
-      return 31 * (31 * mode.hashCode() + System.identityHashCode(first))
-          + System.identityHashCode(second);
-    }
-  }
+  /** Empty identity sets recycled across comparisons, bounded by peak active first-type entries. */
+  private final Deque<Set<Type>> unusedBoundComparisonSets = new ArrayDeque<>();
 
   /** Stable per-run IDs for symbols appearing in structural fingerprints. */
   private final IdentityHashMap<Symbol, Integer> fingerprintSymbolIds = new IdentityHashMap<>();
@@ -2723,15 +2695,36 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         : BoundRelation.SATISFIED;
   }
 
-  /** Starts a comparison unless the same directed identity pair and mode is already active. */
+  /**
+   * Starts a directed identity comparison unless the same pair and mode is already active. Reuses
+   * empty guard storage without retaining any previous comparison's types or outcome.
+   */
   private boolean beginBoundComparison(String mode, Type first, Type second) {
-    return activeBoundComparisons.add(new ActiveBoundComparison(mode, first, second));
+    IdentityHashMap<Type, Set<Type>> pairs =
+        activeBoundComparisons.computeIfAbsent(mode, unused -> new IdentityHashMap<>(4));
+    Set<Type> seconds = pairs.get(first);
+    if (seconds == null) {
+      seconds = unusedBoundComparisonSets.pollFirst();
+      if (seconds == null) {
+        seconds = Collections.newSetFromMap(new IdentityHashMap<>(2));
+      }
+      pairs.put(first, seconds);
+    }
+    return seconds.add(second);
   }
 
-  /** Removes an active comparison after all its independent positions have been visited. */
+  /**
+   * Removes a comparison on unwind, recycling a set only after its last active pair is gone. Empty
+   * mode maps retain capacity; neither these maps nor pooled sets retain references to prior types.
+   */
   private void endBoundComparison(String mode, Type first, Type second) {
-    boolean removed = activeBoundComparisons.remove(new ActiveBoundComparison(mode, first, second));
-    Verify.verify(removed, "no active %s comparison", mode);
+    IdentityHashMap<Type, Set<Type>> pairs = castToNonNull(activeBoundComparisons.get(mode));
+    Set<Type> seconds = castToNonNull(pairs.get(first));
+    seconds.remove(second);
+    if (seconds.isEmpty()) {
+      pairs.remove(first);
+      unusedBoundComparisonSets.addFirst(seconds);
+    }
   }
 
   /**
