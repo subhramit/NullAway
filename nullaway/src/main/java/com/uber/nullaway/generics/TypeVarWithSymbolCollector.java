@@ -33,7 +33,9 @@ public final class TypeVarWithSymbolCollector
     extends Types.DefaultTypeVisitor<@Nullable Void, @Nullable Void> {
 
   private final Set<? extends Element> symbols;
-  private final Set<TypeVar> matches = new LinkedHashSet<>();
+
+  /** Created on the first match; most traversals find none. */
+  private @Nullable Set<TypeVar> matches;
 
   /** Creates a collector for occurrences of a single type variable symbol. */
   public TypeVarWithSymbolCollector(Element symbol) {
@@ -51,24 +53,64 @@ public final class TypeVarWithSymbolCollector
     this.symbols = symbols;
   }
 
-  private final Set<Type> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+  /**
+   * Types already visited, compared by identity. Most traversals visit a handful of nested types,
+   * so the first {@link #SMALL_SEEN_LIMIT} are kept in a small array and scanned linearly; larger
+   * traversals switch to an identity set.
+   */
+  private static final int SMALL_SEEN_LIMIT = 16;
+
+  private Type @Nullable [] smallSeen;
+  private int smallSeenSize;
+  private @Nullable Set<Type> seen;
+
+  /** Adds {@code t} to the visited types; returns false if it was already visited. */
+  @SuppressWarnings({"ReferenceEquality", "TypeEquals"})
+  private boolean markSeen(Type t) {
+    if (seen != null) {
+      return seen.add(t);
+    }
+    if (smallSeen == null) {
+      smallSeen = new Type[SMALL_SEEN_LIMIT];
+    }
+    for (int i = 0; i < smallSeenSize; i++) {
+      if (smallSeen[i] == t) {
+        return false;
+      }
+    }
+    if (smallSeenSize < SMALL_SEEN_LIMIT) {
+      smallSeen[smallSeenSize++] = t;
+      return true;
+    }
+    Set<Type> large = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (int i = 0; i < smallSeenSize; i++) {
+      large.add(smallSeen[i]);
+    }
+    large.add(t);
+    seen = large;
+    smallSeen = null;
+    return true;
+  }
 
   /** Walk a (possibly null) type. */
   private void scan(@Nullable Type t) {
-    if (t != null && seen.add(t)) {
+    if (t != null && markSeen(t)) {
       t.accept(this, null);
     }
   }
 
   /** Results (unmodifiable). */
   public Set<TypeVar> getMatches() {
-    return Collections.unmodifiableSet(matches);
+    return matches == null ? Collections.emptySet() : Collections.unmodifiableSet(matches);
   }
 
   // ---- Core matching logic ----
   @Override
   public @Nullable Void visitTypeVar(TypeVar t, @Nullable Void p) {
     if (symbols.contains(t.tsym)) {
+      if (matches == null) {
+        matches = new LinkedHashSet<>();
+      }
       matches.add(t);
     }
     scan(t.getUpperBound());

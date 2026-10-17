@@ -6,17 +6,25 @@ import com.uber.nullaway.generics.JSpecifyJavacConfig;
 import java.util.List;
 import org.junit.Test;
 
-/** Correctness and measurable workload coverage for balanced generic inference problems. */
+/**
+ * End-to-end regressions for balanced generic inference problems.
+ *
+ * <p>Routine tests use 31/63-call expressions to avoid spending most of the regression time in
+ * javac's own poly-expression inference. Larger workloads also run through NullAway rather than
+ * directly inspecting solver state or javac types. To profile the original 255/511-call sources,
+ * run {@code ./gradlew :nullaway:test --tests '*BalancedInferenceCallsTests'
+ * -PbalancedInferenceStress=true}.
+ */
 public class BalancedInferenceCallsTests extends NullAwayTestsBase {
 
   @Test
-  public void nullableListLeaves255Calls() {
-    checkNullableListLeaves(255);
+  public void nullableListLeaves() {
+    checkNullableListLeaves(Boolean.getBoolean("nullaway.balancedInferenceStress") ? 255 : 31);
   }
 
   @Test
-  public void nullableListLeaves511Calls() {
-    checkNullableListLeaves(511);
+  public void largerNullableListLeaves() {
+    checkNullableListLeaves(Boolean.getBoolean("nullaway.balancedInferenceStress") ? 511 : 63);
   }
 
   @Test

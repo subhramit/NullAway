@@ -295,7 +295,7 @@ public class GenericsUtils {
     // An explicit @NonNull declaration bound narrows the computed bound. A nullable declaration
     // bound only permits nullable instantiations, so it is fallback information and must not widen
     // an already-qualified computed bound.
-    if (Nullness.hasNonNullAnnotation(declarationUpperBound.getAnnotationMirrors().stream(), config)
+    if (Nullness.hasNonNullAnnotation(declarationUpperBound.getAnnotationMirrors(), config)
         || !upperBoundHasExplicitNullnessAnnotation) {
       upperBound =
           TypeSubstitutionUtils.restoreExplicitNullabilityAnnotations(
@@ -311,8 +311,8 @@ public class GenericsUtils {
   }
 
   private static boolean hasNullnessAnnotation(Type type, Config config) {
-    return Nullness.hasNonNullAnnotation(type.getAnnotationMirrors().stream(), config)
-        || Nullness.hasNullableAnnotation(type.getAnnotationMirrors().stream(), config);
+    return Nullness.hasNonNullAnnotation(type.getAnnotationMirrors(), config)
+        || Nullness.hasNullableAnnotation(type.getAnnotationMirrors(), config);
   }
 
   /**
@@ -350,10 +350,10 @@ public class GenericsUtils {
       }
     }
     Type upperBound = (Type) ((TypeVariable) typeVarElement.asType()).getUpperBound();
-    if (Nullness.hasNullableAnnotation(upperBound.getAnnotationMirrors().stream(), config)) {
+    if (Nullness.hasNullableAnnotation(upperBound.getAnnotationMirrors(), config)) {
       return true;
     }
-    if (Nullness.hasNonNullAnnotation(upperBound.getAnnotationMirrors().stream(), config)) {
+    if (Nullness.hasNonNullAnnotation(upperBound.getAnnotationMirrors(), config)) {
       return false;
     }
     if (upperBound.getKind() == TypeKind.TYPEVAR) {
