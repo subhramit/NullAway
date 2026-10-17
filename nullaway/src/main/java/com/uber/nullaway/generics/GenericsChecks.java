@@ -56,6 +56,7 @@ import com.uber.nullaway.NullAway;
 import com.uber.nullaway.NullabilityUtil;
 import com.uber.nullaway.Nullness;
 import com.uber.nullaway.dataflow.AccessPathNullnessAnalysis;
+import com.uber.nullaway.dataflow.DataflowRunState;
 import com.uber.nullaway.dataflow.EnclosingEnvironmentNullness;
 import com.uber.nullaway.dataflow.NullnessStore;
 import com.uber.nullaway.generics.ConstraintSolver.BoundEvidence;
@@ -242,10 +243,10 @@ public final class GenericsChecks {
    * not present as a key in this map, it means inference has not yet been attempted for that call.
    */
   private final Map<Tree, CallInferenceResult> inferredTypeVarNullabilityForGenericCalls =
-      new LinkedHashMap<>();
+      new VersionedMap<>();
 
   /** Final root contexts retained only when their inference inputs are independently reusable. */
-  private final Map<Tree, CallAndContext> completedCallContexts = new LinkedHashMap<>();
+  private final Map<Tree, CallAndContext> completedCallContexts = new VersionedMap<>();
 
   /**
    * Completed enclosing or independent inference results indexed by generic method references. Each
@@ -253,7 +254,7 @@ public final class GenericsChecks {
    * other sites in the same inference problem depend on external unresolved inputs.
    */
   private final Map<MemberReferenceTree, InferenceSuccess>
-      inferredResultsForGenericMethodReferences = new LinkedHashMap<>();
+      inferredResultsForGenericMethodReferences = new VersionedMap<>();
 
   /** References currently being solved independently, guarding declaration-type resolution. */
   private final Set<MemberReferenceTree> methodReferenceInferenceInProgress = new LinkedHashSet<>();
@@ -267,7 +268,7 @@ public final class GenericsChecks {
   /**
    * Completed uncertified outcomes, distinct from reusable inference and diagnostic deduplication.
    */
-  private final Map<Tree, InferencePartial> diagnosticInferenceResults = new LinkedHashMap<>();
+  private final Map<Tree, InferencePartial> diagnosticInferenceResults = new VersionedMap<>();
 
   /** Reporting history has no role in determining which type positions remain checkable. */
   private final Set<ConstraintSolver.InferenceVariable> reportedLowerConflicts =
@@ -277,7 +278,7 @@ public final class GenericsChecks {
    * Maps poly expressions for which we have computed a context-derived type to that type, if
    * inference succeeded.
    */
-  private final Map<Tree, Type> inferredPolyExpressionTypes = new LinkedHashMap<>();
+  private final Map<Tree, Type> inferredPolyExpressionTypes = new VersionedMap<>();
 
   /**
    * Types of implicit lambda parameters to use while generating inference constraints. These types
@@ -444,10 +445,10 @@ public final class GenericsChecks {
   private @Nullable Map<Tree, InferenceCall> callTypesForPolyArguments = null;
 
   /** Maps each {@code var}-declared local to its inferred NullAway type */
-  private final Map<Symbol, Type> inferredVarLocalTypes = new LinkedHashMap<>();
+  private final Map<Symbol, Type> inferredVarLocalTypes = new VersionedMap<>();
 
   /** Maps each {@code var}-declared local to its declaration tree */
-  private final Map<Symbol, VariableTree> varLocalDeclarations = new LinkedHashMap<>();
+  private final Map<Symbol, VariableTree> varLocalDeclarations = new VersionedMap<>();
 
   /**
    * Tracks generic method invocations currently undergoing nested-nullability repair so re-entrant
@@ -615,7 +616,8 @@ public final class GenericsChecks {
       ErrorMessage errorMessage =
           new ErrorMessage(
               ErrorMessage.MessageTypes.UNRECOGNIZED_NULLNESS_ANNOTATION_LOCATION,
-              "illegal location for annotation: nullness annotations cannot be written directly on a wildcard; annotate the wildcard bound instead");
+              "illegal location for annotation: nullness annotations cannot be written directly on"
+                  + " a wildcard; annotate the wildcard bound instead");
       state.reportMatch(
           errorBuilder.createErrorDescription(
               errorMessage, analysis.buildDescription(annotation), state, null));
@@ -702,7 +704,8 @@ public final class GenericsChecks {
         new ErrorMessage(
             ErrorMessage.MessageTypes.TYPE_PARAMETER_CANNOT_BE_NULLABLE,
             String.format(
-                "Type argument cannot be @Nullable, as method %s's type variable %s is not @Nullable",
+                "Type argument cannot be @Nullable, as method %s's type variable %s is not"
+                    + " @Nullable",
                 methodSymbol, typeVariable.tsym.toString()));
     state.reportMatch(
         errorBuilder.createErrorDescription(
@@ -716,7 +719,8 @@ public final class GenericsChecks {
         new ErrorMessage(
             ErrorMessage.MessageTypes.TYPE_PARAMETER_CANNOT_BE_NULLABLE,
             String.format(
-                "Generic type parameter cannot be @Nullable, as type variable %s of type %s does not have a @Nullable upper bound",
+                "Generic type parameter cannot be @Nullable, as type variable %s of type %s does"
+                    + " not have a @Nullable upper bound",
                 baseTypeVariable.tsym.toString(), baseType.tsym.toString()));
     state.reportMatch(
         errorBuilder.createErrorDescription(
@@ -1739,6 +1743,171 @@ public final class GenericsChecks {
   }
 
   /**
+   * Counts changes to the published inference state that a solve can read. A memoized root result
+   * is reused only while this version is unchanged.
+   */
+  private long inferenceStateVersion = 0;
+
+  /** A {@link LinkedHashMap} that advances {@link #inferenceStateVersion} on every change. */
+  private final class VersionedMap<K, V> extends LinkedHashMap<K, V> {
+    private static final long serialVersionUID = 1L;
+
+    private void changed() {
+      inferenceStateVersion++;
+    }
+
+    @Override
+    public @Nullable V put(K key, V value) {
+      changed();
+      return super.put(key, value);
+    }
+
+    @Override
+    public void putAll(Map<? extends K, ? extends V> m) {
+      if (!m.isEmpty()) {
+        changed();
+      }
+      super.putAll(m);
+    }
+
+    @Override
+    public @Nullable V putIfAbsent(K key, V value) {
+      changed();
+      return super.putIfAbsent(key, value);
+    }
+
+    @Override
+    public @Nullable V remove(@Nullable Object key) {
+      changed();
+      return super.remove(key);
+    }
+
+    @Override
+    public boolean remove(@Nullable Object key, @Nullable Object value) {
+      changed();
+      return super.remove(key, value);
+    }
+
+    @Override
+    public void clear() {
+      changed();
+      super.clear();
+    }
+
+    @Override
+    public V computeIfAbsent(K key, java.util.function.Function<? super K, ? extends V> fn) {
+      changed();
+      return super.computeIfAbsent(key, fn);
+    }
+
+    @Override
+    public @Nullable V computeIfPresent(
+        K key, java.util.function.BiFunction<? super K, ? super V, ? extends @Nullable V> fn) {
+      changed();
+      return super.computeIfPresent(key, fn);
+    }
+
+    @Override
+    public @Nullable V compute(
+        K key,
+        java.util.function.BiFunction<? super K, ? super @Nullable V, ? extends @Nullable V> fn) {
+      changed();
+      return super.compute(key, fn);
+    }
+
+    @Override
+    public @Nullable V merge(
+        K key,
+        V value,
+        java.util.function.BiFunction<? super V, ? super V, ? extends @Nullable V> fn) {
+      changed();
+      return super.merge(key, value, fn);
+    }
+
+    @Override
+    public @Nullable V replace(K key, V value) {
+      changed();
+      return super.replace(key, value);
+    }
+
+    @Override
+    public boolean replace(K key, V oldValue, V newValue) {
+      changed();
+      return super.replace(key, oldValue, newValue);
+    }
+
+    @Override
+    public void replaceAll(java.util.function.BiFunction<? super K, ? super V, ? extends V> fn) {
+      changed();
+      super.replaceAll(fn);
+    }
+  }
+
+  /**
+   * A root solve that was not published for reuse, with the inputs it was computed from. See {@link
+   * #rootSolveMemo}.
+   */
+  private record RootSolveMemo(
+      boolean hasPath,
+      boolean assignedToLocal,
+      @Nullable Type typeFromAssignmentContext,
+      Type.MethodType signature,
+      Type resultTemplate,
+      long version,
+      CallInferenceResult result) {
+
+    /**
+     * Checks whether a solve with these inputs would see the same inputs as this entry. Types are
+     * compared by identity first and otherwise by their annotated rendering, since javac often
+     * rebuilds equal types.
+     */
+    boolean matches(
+        @Nullable TreePath path,
+        InferenceCall inferenceCall,
+        @Nullable Type context,
+        boolean assigned) {
+      return hasPath == (path != null)
+          && assignedToLocal == assigned
+          && sameRendering(typeFromAssignmentContext, context)
+          && sameRendering(signature, inferenceCall.signature)
+          && sameRendering(resultTemplate, inferenceCall.resultTemplate);
+    }
+
+    /** Compares annotated renderings because javac can rebuild equivalent memoization inputs. */
+    @SuppressWarnings({"ReferenceEquality", "TypeEquals", "TypeToString"})
+    private static boolean sameRendering(@Nullable Type first, @Nullable Type second) {
+      if (first == second) {
+        return true;
+      }
+      return first != null && second != null && first.toString().equals(second.toString());
+    }
+  }
+
+  /**
+   * Root solves keyed by call tree. Ordinary checking can ask for the same call several times (once
+   * per argument, then for the call-level comparison, then for return nullness), and results that
+   * are not published (for example partial solutions) would otherwise be solved again each time. An
+   * entry is reused only for identical inputs and only while {@link #inferenceStateVersion} is
+   * unchanged, so a reuse returns what a new solve would compute.
+   */
+  private final IdentityHashMap<Tree, RootSolveMemo> rootSolveMemo = new IdentityHashMap<>();
+
+  /**
+   * A root solve can be memoized only when none of its inputs are provisional: it is not part of a
+   * dataflow analysis or an enclosing solve, and no lambda or method-reference context is active.
+   */
+  private boolean canMemoizeRootSolve(boolean calledFromDataflow) {
+    return okToCacheInferenceResult(calledFromDataflow)
+        && activeInferenceSolvers.isEmpty()
+        && dataflowInferenceScope == null
+        && lambdaVarLocalInference == null
+        && callTypesForPolyArguments == null
+        && methodReferenceInferenceInProgress.isEmpty()
+        && nestedNullabilityRepairInProgress.isEmpty()
+        && !DataflowRunState.isAnyAnalysisRunning();
+  }
+
+  /**
    * Runs inference for a generic call, side-effecting the
    * #inferredTypeVarNullabilityForGenericCalls map with the result.
    *
@@ -1754,6 +1923,47 @@ public final class GenericsChecks {
    *     with an error message
    */
   private CallInferenceResult runInferenceForCall(
+      VisitorState state,
+      @Nullable TreePath path,
+      InferenceCall inferenceCall,
+      @Nullable Type typeFromAssignmentContext,
+      boolean assignedToLocal,
+      boolean calledFromDataflow) {
+    ExpressionTree callTree = inferenceCall.site.tree;
+    boolean memoize = canMemoizeRootSolve(calledFromDataflow);
+    if (memoize) {
+      RootSolveMemo memo = rootSolveMemo.get(callTree);
+      if (memo != null
+          && memo.version() == inferenceStateVersion
+          && memo.matches(path, inferenceCall, typeFromAssignmentContext, assignedToLocal)) {
+        return memo.result();
+      }
+    }
+    CallInferenceResult solved =
+        solveAndPublish(
+            state,
+            path,
+            inferenceCall,
+            typeFromAssignmentContext,
+            assignedToLocal,
+            calledFromDataflow);
+    if (memoize) {
+      rootSolveMemo.put(
+          callTree,
+          new RootSolveMemo(
+              path != null,
+              assignedToLocal,
+              typeFromAssignmentContext,
+              inferenceCall.signature,
+              inferenceCall.resultTemplate,
+              inferenceStateVersion,
+              solved));
+    }
+    return solved;
+  }
+
+  /** Runs one solve for {@code inferenceCall} and publishes what the result allows. */
+  private CallInferenceResult solveAndPublish(
       VisitorState state,
       @Nullable TreePath path,
       InferenceCall inferenceCall,
@@ -2498,7 +2708,8 @@ public final class GenericsChecks {
   private String inferenceFailureMessage(UnsatisfiableConstraintsException e) {
     if (e.isCausedByNonNullUpperBound()) {
       return String.format(
-          "inference failure: type variable %s is constrained to be @Nullable, but its upper bound requires it to be @NonNull",
+          "inference failure: type variable %s is constrained to be @Nullable, but its upper bound"
+              + " requires it to be @NonNull",
           e.getTypeVariable());
     }
     return String.format(
@@ -4481,7 +4692,7 @@ public final class GenericsChecks {
     if (TypeSubstitutionUtils.hasNullableRoot(upperBound, config)) {
       return true;
     }
-    if (Nullness.hasNonNullAnnotation(upperBound.getAnnotationMirrors().stream(), config)) {
+    if (Nullness.hasNonNullAnnotation(upperBound.getAnnotationMirrors(), config)) {
       return false;
     }
     // Member-type substitution (asMemberOf) can strip type-use @Nullable from a concrete method
@@ -4498,7 +4709,7 @@ public final class GenericsChecks {
     if (TypeSubstitutionUtils.hasNullableRoot(originalBound, config)) {
       return true;
     }
-    if (Nullness.hasNonNullAnnotation(originalBound.getAnnotationMirrors().stream(), config)) {
+    if (Nullness.hasNonNullAnnotation(originalBound.getAnnotationMirrors(), config)) {
       return false;
     }
     // Bound may still be a free type variable (e.g. subclass keeps the enclosing type parameter).
@@ -5507,6 +5718,7 @@ public final class GenericsChecks {
    * after each CompilationUnit to avoid memory leaks.
    */
   public void clearCache() {
+    rootSolveMemo.clear();
     inferredTypeVarNullabilityForGenericCalls.clear();
     callSites.clear();
     completedCallContexts.clear();
