@@ -2771,6 +2771,60 @@ public class GenericMethodTests extends NullAwayTestsBase {
   }
 
   @Test
+  public void dependentDeclarationEdgePropagatesNullnessWithoutStructuredLowers() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static <T extends @Nullable Object, U extends T> T widen(U value) {
+                return value;
+              }
+              static void test() {
+                // A null literal constrains U's root without adding structured lower evidence.
+                var nullable = widen(null);
+                // BUG: Diagnostic contains: dereferenced expression
+                nullable.toString();
+                var nonNull = widen("value");
+                nonNull.toString();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void nestedDeclarationBoundsAcquireLowerEvidenceOnLaterPreparationPasses() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Box<E extends @Nullable Object> {}
+              // T and U are visited before V, which initially owns all the lower evidence.
+              static <T extends @Nullable Object, U extends Box<T>, V extends Box<U>> T extract(
+                  V value) {
+                throw new RuntimeException();
+              }
+              static void test(Box<Box<@Nullable String>> nullable, Box<Box<String>> nonNull) {
+                var nullableResult = extract(nullable);
+                // BUG: Diagnostic contains: dereferenced expression
+                nullableResult.length();
+                var nonNullResult = extract(nonNull);
+                nonNullResult.length();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
   public void inheritedStructuredEvidenceReachesFixedPoint() {
     makeHelper()
         .addSourceLines(
