@@ -443,8 +443,9 @@ public interface ConstraintSolver {
    * retain the original declaration for library-modeled bound nullability, including intersection
    * bounds, even when a separate inference problem treats the fresh variables as fixed types.
    *
-   * <p>Register each site once per inference problem. Constraint generation visits each call or
-   * method-reference tree once; separate inference problems use separate solvers.
+   * <p>Registering the same site again returns the same fresh type variables, preserving their
+   * identity in existing constraints. Later registrations retain additional bound and javac
+   * instantiation inputs; separate inference problems use separate solvers.
    *
    * @param site the tree whose type arguments are inferred
    * @param typeVariables the declared type variables inferred at {@code site}
