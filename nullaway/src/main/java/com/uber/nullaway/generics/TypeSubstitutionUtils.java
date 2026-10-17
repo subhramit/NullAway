@@ -45,7 +45,7 @@ public class TypeSubstitutionUtils {
       }
       return !intersection.getExplicitComponents().isEmpty();
     }
-    return Nullness.hasNullableAnnotation(type.getAnnotationMirrors().stream(), config);
+    return Nullness.hasNullableAnnotation(type.getAnnotationMirrors(), config);
   }
 
   /**
@@ -298,7 +298,7 @@ public class TypeSubstitutionUtils {
         return type;
       }
       if (hasNullableRoot(type, config)
-          || Nullness.hasNonNullAnnotation(type.getAnnotationMirrors().stream(), config)) {
+          || Nullness.hasNonNullAnnotation(type.getAnnotationMirrors(), config)) {
         return type;
       }
       ListBuffer<Attribute.TypeCompound> annotations = new ListBuffer<>();
@@ -1118,9 +1118,8 @@ public class TypeSubstitutionUtils {
         continue;
       }
       boolean nullable = Nullness.isNullableAnnotation(name, config);
-      if (Nullness.hasNullableAnnotation(target.getAnnotationMirrors().stream(), config) == nullable
-          && Nullness.hasNonNullAnnotation(target.getAnnotationMirrors().stream(), config)
-              == !nullable
+      if (Nullness.hasNullableAnnotation(target.getAnnotationMirrors(), config) == nullable
+          && Nullness.hasNonNullAnnotation(target.getAnnotationMirrors(), config) == !nullable
           // Synthetic markers also certify inferred nullness; an explicit annotation alone does
           // not.
           && (!GenericsChecks.isSyntheticNullnessAnnotation(annotation.type)
