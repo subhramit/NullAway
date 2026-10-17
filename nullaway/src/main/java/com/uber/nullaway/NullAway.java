@@ -2115,8 +2115,9 @@ public class NullAway extends BugChecker
     }
     Type expressionType = ASTHelpers.getType(expr);
     if (expressionType != null && expressionType.getKind() == TypeKind.ARRAY) {
-      Symbol arraySymbol = ASTHelpers.getSymbol(expr);
-      if (arraySymbol != null && isArrayElementNullable(arraySymbol, config)) {
+      TreePath expressionPath = pathWithLeaf(state.getPath(), expr);
+      if (genericsChecks.isArrayElementNullable(
+          expr, state.withPath(expressionPath), /* calledFromDataflow= */ false)) {
         // A nullable element is being unboxed to a primitive. This is unsafe.
         ErrorMessage errorMessageUnbox =
             new ErrorMessage(MessageTypes.UNBOX_NULLABLE, "unboxing of a @Nullable value");
@@ -2954,10 +2955,11 @@ public class NullAway extends BugChecker
           // In JSpecify mode, we check if the array element type is nullable
           ArrayAccessTree arrayAccess = (ArrayAccessTree) expr;
           ExpressionTree arrayExpr = arrayAccess.getExpression();
-          Symbol arraySymbol = ASTHelpers.getSymbol(arrayExpr);
-          if (arraySymbol != null) {
-            exprMayBeNull = NullabilityUtil.isArrayElementNullable(arraySymbol, config);
-          }
+          TreePath arrayExprPath =
+              pathWithLeaf(pathWithLeaf(state.getPath(), arrayAccess), arrayExpr);
+          exprMayBeNull =
+              genericsChecks.isArrayElementNullable(
+                  arrayExpr, state.withPath(arrayExprPath), /* calledFromDataflow= */ false);
         }
       }
       case MEMBER_SELECT -> {
