@@ -444,8 +444,9 @@ public interface ConstraintSolver {
    * types cannot be annotated safely. The solver still consults the declared variables for modeled
    * bound nullability when solving their constraints.
    *
-   * <p>Register each site once per inference problem. Constraint generation visits each call or
-   * method-reference tree once; separate inference problems use separate solvers.
+   * <p>Registering the same site again returns the same fresh type variables, preserving their
+   * identity in existing constraints. Later registrations retain additional bound and javac
+   * instantiation inputs; separate inference problems use separate solvers.
    *
    * @param site the tree whose type arguments are inferred
    * @param typeVariables the declared type variables inferred at {@code site}

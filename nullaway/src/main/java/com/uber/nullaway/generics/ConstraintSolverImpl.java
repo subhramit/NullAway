@@ -91,7 +91,6 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   private final IdentityHashMap<Element, InferenceVariable> inferenceVariables =
       new IdentityHashMap<>();
 
-
   /** Explicit foreign unresolved symbols, never generic caller type parameters by default. */
   private final Set<Element> externalInferenceSymbols = new LinkedHashSet<>();
 
