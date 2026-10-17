@@ -175,11 +175,6 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
      * classes, and symbolic fixed type variables. Non-generic subclasses are kept because alignment
      * to a generic supertype can expose nested nullability.
      */
-    final List<Type> lowerBoundTypes = new ArrayList<>();
-
-    /** Structural fingerprints used to deduplicate {@link #lowerBoundTypes}. */
-    final Set<String> lowerBoundKeys = new LinkedHashSet<>();
-
     final Map<String, BoundEvidence> lowerBoundEvidence = new LinkedHashMap<>();
 
     /** Fixed lower uses that constrain this variable's root, not an annotated projection of it. */
@@ -195,14 +190,10 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
 
     /**
      * Structured types {@code S} with a constraint {@code var <: S}, in the order the constraints
-     * were added. A type appearing in both this list and {@link #lowerBoundTypes} arises from an
-     * equality constraint, e.g., between invariant type arguments.
+     * were added. A type appearing in both this map and {@link #lowerBoundEvidence} arises from an
+     * equality constraint, e.g., between invariant type arguments. Fingerprint keys deduplicate
+     * semantic bounds while the values retain their first type and merged provenance.
      */
-    final List<Type> upperBoundTypes = new ArrayList<>();
-
-    /** Structural fingerprints used to deduplicate {@link #upperBoundTypes}. */
-    final Set<String> upperBoundKeys = new LinkedHashSet<>();
-
     final Map<String, BoundEvidence> upperBoundEvidence = new LinkedHashMap<>();
 
     VarState(boolean nullableAllowed) {
@@ -1553,8 +1544,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     List<Type> evidence = new ArrayList<>();
     VarState st = vars.get(inferenceVar);
     if (st != null) {
-      evidence.addAll(st.lowerBoundTypes);
-      evidence.addAll(st.upperBoundTypes);
+      for (BoundEvidence bound : st.lowerBoundEvidence.values()) {
+        evidence.add(bound.type());
+      }
+      for (BoundEvidence bound : st.upperBoundEvidence.values()) {
+        evidence.add(bound.type());
+      }
     }
     Type.TypeVar freshTypeVariable = freshTypeVariableForInferenceVariable.get(inferenceVar);
     if (freshTypeVariable != null && nullnessMarkedDeclarationBounds.contains(inferenceVar)) {
@@ -1650,6 +1645,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
       versionBeforePass = structuredConstraintVersion;
       for (InferenceVariable inferenceVar : new ArrayList<>(vars.keySet())) {
         addDeclaredUpperBoundEdge(inferenceVar);
+        VarState st = castToNonNull(vars.get(inferenceVar));
+        // Both comparison loops require lower evidence. Recheck on every pass: another
+        // variable can add bounds or subtype edges after this variable has been visited.
+        if (st.lowerBoundEvidence.isEmpty() && st.structuralSubtypes.isEmpty()) {
+          continue;
+        }
         StructuredBounds bounds = structuredBounds(inferenceVar);
         Type shape = javacInstantiations.get(inferenceVar);
         if (shape != null) {
@@ -2151,8 +2152,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
    * separately. Both semantic and provenance additions invalidate snapshots.
    */
   private List<BoundEvidence> collectStructuredEvidence(InferenceVariable start, boolean lower) {
-    List<BoundEvidence> result = new ArrayList<>();
-    for (BoundEvidence bound : collectReachableEvidence(start, lower)) {
+    List<BoundEvidence> reachable = collectReachableEvidence(start, lower);
+    if (reachable.isEmpty()) {
+      return List.of();
+    }
+    List<BoundEvidence> result = new ArrayList<>(reachable.size());
+    for (BoundEvidence bound : reachable) {
       result.add(withReferencedOrigins(bound));
     }
     return List.copyOf(result);
@@ -2215,6 +2220,14 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
    * change the version; enriched origins and resolved values are deliberately not cached here.
    */
   private List<BoundEvidence> collectReachableEvidence(InferenceVariable start, boolean lower) {
+    if (lower) {
+      VarState st = vars.get(start);
+      // Declaration bounds contribute only upper evidence; without subtype edges there is
+      // nowhere else to find lower evidence. Do not cache this across graph changes.
+      if (st == null || (st.lowerBoundEvidence.isEmpty() && st.structuralSubtypes.isEmpty())) {
+        return List.of();
+      }
+    }
     if (reachableEvidenceMemoVersion != structuredConstraintVersion) {
       reachableEvidenceMemo.clear();
       reachableEvidenceMemoVersion = structuredConstraintVersion;
@@ -2967,15 +2980,10 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         && !(boundType instanceof ClassType)) {
       return;
     }
-    List<Type> bounds = lower ? st.lowerBoundTypes : st.upperBoundTypes;
-    Set<String> keys = lower ? st.lowerBoundKeys : st.upperBoundKeys;
     String key = structuredTypeKey(boundType);
-    boolean changed = keys.add(key);
-    if (changed) {
-      bounds.add(boundType);
-    }
     Map<String, BoundEvidence> evidence = lower ? st.lowerBoundEvidence : st.upperBoundEvidence;
     BoundEvidence previous = evidence.get(key);
+    boolean changed = previous == null;
     List<SourceOrigin> origins =
         previous == null ? currentOrigins : combinedOrigins(previous.origins(), currentOrigins);
     SourceSupport support =
