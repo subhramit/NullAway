@@ -321,7 +321,6 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     recordJavacInstantiations(site, fresh.keySet(), javacInstantiations);
     for (Element variable : fresh.keySet()) {
       getState(new InferenceVariable(variable, site));
-
     }
     return fresh;
   }
@@ -1673,7 +1672,8 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
       addStructuralVariableEdge(inferenceVar, structuralUpper);
     }
     InferenceVariable upperVariable = inferenceVariableForUse(upperBound);
-    if (upperVariable != null) {
+    // A nullable model overrides the bound's root nullness, not its structural dependency.
+    if (upperVariable != null && !hasNullableUpperBoundOverride(inferenceVar.typeVariable())) {
       addInferenceVariableEdge(inferenceVar, upperVariable);
     }
   }
@@ -3067,10 +3067,14 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   /* ───────────────────── helpers & stubs ───────────────────── */
 
   /**
-   * Returns whether a handler explicitly models this declared type variable's bound as nullable.
+   * Returns whether a handler explicitly models the bound of this variable's declaration as
+   * nullable, including when another solver supplied the fresh symbol.
    */
   private boolean hasNullableUpperBoundOverride(Element typeVariable) {
     Symbol.TypeVariableSymbol symbol = (Symbol.TypeVariableSymbol) typeVariable;
+    while (symbol instanceof FreshTypeVariableSymbol freshSymbol) {
+      symbol = freshSymbol.declaredSymbol;
+    }
     if (symbol.owner instanceof Symbol.MethodSymbol method) {
       int index = method.getTypeParameters().indexOf(symbol);
       return index >= 0 && handler.onOverrideMethodTypeVariableUpperBound(method, index, state);

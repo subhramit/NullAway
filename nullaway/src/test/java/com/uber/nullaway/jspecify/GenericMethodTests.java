@@ -11,6 +11,26 @@ import org.junit.Test;
 public class GenericMethodTests extends NullAwayTestsBase {
 
   @Test
+  public void modeledNullableDependentBoundKeepsPeerNonNull() {
+    makeHelper()
+        .addSourceLines(
+            "NestedAnnots.java",
+            """
+            package com.uber.lib.unannotated;
+            import org.jspecify.annotations.NullMarked;
+            @NullMarked
+            class NestedAnnots<T extends U, U> {
+              // The test library model permits nullable T, but U remains non-null.
+              NestedAnnots(T first, U second) {}
+              static void test() {
+                new NestedAnnots<>(null, new Object());
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
   public void genericNonNullIdentityFunction() {
     makeHelper()
         .addSourceLines(
