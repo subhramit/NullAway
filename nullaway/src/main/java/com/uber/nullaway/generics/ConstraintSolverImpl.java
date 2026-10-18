@@ -4,6 +4,7 @@ import static com.uber.nullaway.NullabilityUtil.castToNonNull;
 
 import com.google.common.base.Verify;
 import com.google.errorprone.VisitorState;
+import com.sun.source.tree.Tree;
 import com.sun.tools.javac.code.BoundKind;
 import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.code.Type;
@@ -22,6 +23,7 @@ import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import javax.lang.model.element.Element;
@@ -38,8 +40,13 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   private final Handler handler;
   private final VisitorState state;
 
-  /** Type variables belonging to the calls participating in this inference problem. */
-  private final Set<Element> inferenceVariables = new LinkedHashSet<>();
+  /**
+   * Maps the symbol of each fresh type variable created by {@link #registerInferenceVariables(Tree,
+   * List)} to the inference variable it represents. Only type variables with these symbols are
+   * treated as inference variables; all other type variables are fixed.
+   */
+  private final IdentityHashMap<Element, InferenceVariable> inferenceVariables =
+      new IdentityHashMap<>();
 
   public ConstraintSolverImpl(Config config, VisitorState state, NullAway analysis) {
     this.config = config;
@@ -68,10 +75,10 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     NullnessState nullness = NullnessState.UNKNOWN;
 
     /** Important to use a LinkedHashSet here for determinism in error messages. */
-    final Set<Element> supertypes = new LinkedHashSet<>();
+    final Set<InferenceVariable> supertypes = new LinkedHashSet<>();
 
     /** Important to use a LinkedHashSet here for determinism in error messages. */
-    final Set<Element> subtypes = new LinkedHashSet<>();
+    final Set<InferenceVariable> subtypes = new LinkedHashSet<>();
 
     VarState(boolean nullableAllowed) {
       this.nullableAllowed = nullableAllowed;
@@ -82,13 +89,38 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
    * All variables seen so far. Important to use a LinkedHashMap here for determinism in error
    * messages.
    */
-  private final Map<Element, VarState> vars = new LinkedHashMap<>();
+  private final Map<InferenceVariable, VarState> vars = new LinkedHashMap<>();
 
   /* ───────────────────── public API ───────────────────── */
 
   @Override
-  public void registerInferenceVariable(Element typeVariable) {
-    inferenceVariables.add(typeVariable);
+  public Map<Element, Type.TypeVar> registerInferenceVariables(
+      Tree site, List<? extends Element> typeVariables) {
+
+    // First create all the fresh type variables, since the upper bound of one type variable can
+    // refer to others, e.g., <T extends Comparable<T>> or <T, U extends T>.
+    Map<Element, Type.TypeVar> fresh = new LinkedHashMap<>();
+    for (Element typeVariable : typeVariables) {
+      FreshTypeVariableSymbol symbol =
+          new FreshTypeVariableSymbol((Symbol.TypeVariableSymbol) typeVariable);
+      fresh.put(typeVariable, (Type.TypeVar) symbol.type);
+    }
+    // Rebind references in upper bounds as well: following a bound such as V extends Box<T>
+    // must lead to this site's fresh T, not back to the fixed declaration variable.
+    Types types = state.getTypes();
+    for (Map.Entry<Element, Type.TypeVar> entry : fresh.entrySet()) {
+      Type.TypeVar declared = (Type.TypeVar) ((Symbol) entry.getKey()).type;
+      entry
+          .getValue()
+          .setUpperBound(
+              TypeSubstitutionUtils.substituteTypeVariables(
+                  declared.getUpperBound(), fresh, types, config));
+    }
+    for (Map.Entry<Element, Type.TypeVar> entry : fresh.entrySet()) {
+      inferenceVariables.put(entry.getValue().tsym, new InferenceVariable(entry.getKey(), site));
+    }
+
+    return fresh;
   }
 
   @Override
@@ -113,13 +145,10 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
 
     @Override
     public @Nullable Void visitType(Type subtype, Type supertype) {
-      if (config.handleWildcardGenerics()) {
-        WildcardType supertypeWildcard = GenericsUtils.asWildcard(supertype);
-        if (supertypeWildcard != null) {
-          Verify.verify(!localVariableType, "A local variable should not have a wildcard type");
-          constrainSubtypeToWildcard(subtype, supertypeWildcard);
-          return null;
-        }
+      if (config.handleWildcardGenerics() && supertype instanceof WildcardType supertypeWildcard) {
+        Verify.verify(!localVariableType, "A local variable should not have a wildcard type");
+        constrainSubtypeToWildcard(subtype, supertypeWildcard);
+        return null;
       }
       // handle flow into a type variable. The check for !(subtype instanceof TypeVar) is a
       // small optimization, as that case should be handled in visitTypeVar.
@@ -205,8 +234,9 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         equateTypeArguments(subtypeTypeArg, supertypeTypeArg);
         return;
       }
-      WildcardType supertypeWildcard = GenericsUtils.asWildcard(supertypeTypeArg);
-      if (supertypeWildcard != null) {
+      // A captured formal is a type variable, not a wildcard containment target. Expanding
+      // its backing wildcard can repeatedly unfold self-referential bounds (see issue #1934).
+      if (supertypeTypeArg instanceof WildcardType supertypeWildcard) {
         constrainContainedByWildcard(subtypeTypeArg, supertypeWildcard);
         return;
       }
@@ -305,24 +335,25 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   }
 
   @Override
-  public Map<Element, InferredNullability> solve() throws UnsatisfiableConstraintsException {
+  public Map<InferenceVariable, InferredNullability> solve()
+      throws UnsatisfiableConstraintsException {
     /* ---------- work-list propagation of nullability ---------- */
-    Deque<Element> work = new ArrayDeque<>();
+    Deque<InferenceVariable> work = new ArrayDeque<>();
     vars.forEach(
-        (tv, st) -> {
+        (inferenceVar, st) -> {
           if (st.nullness != NullnessState.UNKNOWN) {
-            work.add(tv);
+            work.add(inferenceVar);
           }
         });
 
     while (!work.isEmpty()) {
-      Element typeVarElement = work.removeFirst();
-      VarState st = castToNonNull(vars.get(typeVarElement));
+      InferenceVariable inferenceVar = work.removeFirst();
+      VarState st = castToNonNull(vars.get(inferenceVar));
 
       switch (st.nullness) {
         case NONNULL -> {
           /* S <: tv  &  tv NONNULL  ⇒  S NONNULL */
-          for (Element sub : st.subtypes) {
+          for (InferenceVariable sub : st.subtypes) {
             if (updateNullness(sub, NullnessState.NONNULL)) {
               work.add(sub);
             }
@@ -330,7 +361,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         }
         case NULLABLE -> {
           /* tv <: T  &  tv NULLABLE  ⇒  T NULLABLE */
-          for (Element sup : st.supertypes) {
+          for (InferenceVariable sup : st.supertypes) {
             if (updateNullness(sup, NullnessState.NULLABLE)) {
               work.add(sup);
             }
@@ -339,18 +370,18 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         default ->
             // UNKNOWN
             throw new RuntimeException(
-                "Unexpected nullness state: " + st.nullness + " for " + typeVarElement);
+                "Unexpected nullness state: " + st.nullness + " for " + inferenceVar);
       }
     }
 
     /* ---------- build final solution map ---------- */
-    Map<Element, InferredNullability> result = new LinkedHashMap<>();
+    Map<InferenceVariable, InferredNullability> result = new LinkedHashMap<>();
     vars.forEach(
-        (tv, st) -> {
+        (inferenceVar, st) -> {
           // Note: if the nullness state is UNKNOWN, we infer NONNULL arbitrarily
           // TODO does this matter?  should we use NULLABLE instead?
           result.put(
-              tv,
+              inferenceVar,
               st.nullness == NullnessState.NULLABLE
                   ? InferredNullability.NULLABLE
                   : InferredNullability.NONNULL);
@@ -358,6 +389,16 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     return result;
   }
 
+  /**
+   * Adds the top-level nullability constraints implied by {@code s <: t}.
+   *
+   * <p>Only a registered inference variable with no explicit nullness annotation takes a
+   * constraint; see {@link #inferenceVariableForUse(Type)}. For other types, including enclosing
+   * type parameters and explicitly annotated type-variable uses, no constraint is introduced, and
+   * the normal type compatibility checks report any incompatibility.
+   *
+   * @throws UnsatisfiableConstraintsException if the constraint leads to a contradiction
+   */
   private void directlyConstrainTypePair(Type s, Type t) throws UnsatisfiableConstraintsException {
     Verify.verify(
         s instanceof TypeVariable || t instanceof TypeVariable,
@@ -365,101 +406,87 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         s,
         t);
     /* variable-to-variable edge */
-    if (treatAsTypeVariableForInference(s) && treatAsTypeVariableForInference(t)) {
-      TypeVariable sv = (TypeVariable) s;
-      TypeVariable tv = (TypeVariable) t;
-      getState(sv.asElement()).supertypes.add(tv.asElement());
-      getState(tv.asElement()).subtypes.add(sv.asElement());
+    InferenceVariable sVar = inferenceVariableForUse(s);
+    InferenceVariable tVar = inferenceVariableForUse(t);
+    if (sVar != null && tVar != null) {
+      getState(sVar).supertypes.add(tVar);
+      getState(tVar).subtypes.add(sVar);
     }
 
     /* top-level nullability rules */
-    if (isKnownNonNull(t)) {
-      constrainAsNonNull(s);
+    if (isKnownNonNull(t) && sVar != null) {
+      updateNullness(sVar, NullnessState.NONNULL);
     }
-    if (isKnownNullable(s)) {
-      constrainAsNullable(t);
+    if (isKnownNullable(s) && tVar != null) {
+      updateNullness(tVar, NullnessState.NULLABLE);
     }
   }
 
   /* ───────────────────── nullability bookkeeping ───────────────────── */
 
-  /** Force {@code tv} to {@code n}. Returns true if state changed. */
-  private boolean updateNullness(Element typeVarElement, NullnessState n)
+  /**
+   * Force {@code inferenceVar} to {@code n}. Returns true if state changed.
+   *
+   * @throws UnsatisfiableConstraintsException if the constraint leads to a contradiction
+   */
+  private boolean updateNullness(InferenceVariable inferenceVar, NullnessState n)
       throws UnsatisfiableConstraintsException {
-    VarState st = getState(typeVarElement);
+    VarState st = getState(inferenceVar);
 
     if (st.nullness == n) {
       return false;
     }
     if (n == NullnessState.NULLABLE && !st.nullableAllowed) {
-      throw new UnsatisfiableConstraintsException(typeVarElement, true);
+      throw new UnsatisfiableConstraintsException(inferenceVar.typeVariable(), true);
     }
     if (st.nullness != NullnessState.UNKNOWN) {
-      throw new UnsatisfiableConstraintsException(typeVarElement);
+      throw new UnsatisfiableConstraintsException(inferenceVar.typeVariable());
     }
     st.nullness = n;
     return true;
   }
 
-  /**
-   * Records that {@code t} must be {@code @Nullable}.
-   *
-   * <p>Only a registered inference variable with no explicit nullness annotation takes a
-   * constraint. For other types, including enclosing type parameters and explicitly annotated
-   * type-variable uses, this method does not introduce any constraint, and the normal type
-   * compatibility checks report any incompatibility.
-   *
-   * @param t the type to constrain
-   * @throws UnsatisfiableConstraintsException if the constraint leads to a contradiction
-   */
-  private void constrainAsNullable(Type t) throws UnsatisfiableConstraintsException {
-    if (treatAsTypeVariableForInference(t)) {
-      updateNullness(t.asElement(), NullnessState.NULLABLE);
-    }
-  }
-
-  /**
-   * Records that {@code t} must be {@code @NonNull}.
-   *
-   * <p>Only a registered inference variable with no explicit nullness annotation takes a
-   * constraint. For other types, including enclosing type parameters and explicitly annotated
-   * type-variable uses, this method does not introduce any constraint, and the normal type
-   * compatibility checks report any incompatibility.
-   *
-   * @param t the type to constrain
-   * @throws UnsatisfiableConstraintsException if the constraint leads to a contradiction
-   */
-  private void constrainAsNonNull(Type t) throws UnsatisfiableConstraintsException {
-    if (treatAsTypeVariableForInference(t)) {
-      updateNullness(t.asElement(), NullnessState.NONNULL);
-    }
-  }
-
   /* ───────────────────── helpers & stubs ───────────────────── */
 
-  private VarState getState(Element typeVarElement) {
+  private VarState getState(InferenceVariable inferenceVar) {
     return vars.computeIfAbsent(
-        typeVarElement,
-        v -> new VarState(GenericsUtils.upperBoundIsNullable(v, config, handler, state)));
+        inferenceVar,
+        v ->
+            new VarState(
+                GenericsUtils.upperBoundIsNullable(v.typeVariable(), config, handler, state)));
+  }
+
+  /**
+   * If {@code t} is a use of an inference variable without a nullness override, returns that
+   * inference variable. Otherwise, returns {@code null}.
+   *
+   * @param t the type
+   * @return the inference variable used by {@code t}, or {@code null} if {@code t} should be
+   *     treated as a fixed type for inference
+   */
+  private @Nullable InferenceVariable inferenceVariableForUse(Type t) {
+    if (!(t instanceof TypeVar tv)) {
+      return null;
+    }
+    InferenceVariable inferenceVar = inferenceVariables.get(tv.asElement());
+    // Only treat as an inference variable if the use _doesn't_ have an explicit @Nullable or
+    // @NonNull annotation.
+    if (inferenceVar == null
+        || Nullness.hasNullableAnnotation(tv.getAnnotationMirrors().stream(), config)
+        || Nullness.hasNonNullAnnotation(tv.getAnnotationMirrors().stream(), config)) {
+      return null;
+    }
+    return inferenceVar;
   }
 
   /** Returns whether this use denotes an inference variable without a nullness override. */
   private boolean treatAsTypeVariableForInference(Type t) {
-    if (t instanceof TypeVar tv) {
-      // Only treat as a type variable if it _doesn't_ have an explicit @Nullable or @NonNull
-      // annotation.
-      return inferenceVariables.contains(tv.asElement())
-          && !Nullness.hasNullableAnnotation(tv.getAnnotationMirrors().stream(), config)
-          && !Nullness.hasNonNullAnnotation(tv.getAnnotationMirrors().stream(), config);
-    } else {
-      return false;
-    }
+    return inferenceVariableForUse(t) != null;
   }
 
   /** Returns whether a type is explicitly nullable or is the null type. */
   private boolean isKnownNullable(Type t) {
-    return t instanceof NullType
-        || Nullness.hasNullableAnnotation(t.getAnnotationMirrors().stream(), config);
+    return t instanceof NullType || TypeSubstitutionUtils.hasNullableRoot(t, config);
   }
 
   /**
