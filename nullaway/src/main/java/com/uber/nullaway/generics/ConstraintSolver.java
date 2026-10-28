@@ -440,8 +440,8 @@ public interface ConstraintSolver {
    * site}, so that each occurrence of a type variable in a constraint identifies the site it
    * belongs to. The fresh type variables have the same name and owner as the declared type
    * variables, with references in their upper bounds rebound to the fresh variables. Their symbols
-   * retain the original declaration for library-modeled bound nullability, including intersection
-   * bounds, even when a separate inference problem treats the fresh variables as fixed types.
+   * retain the original declaration for library-modeled bound nullability, even when a separate
+   * inference problem treats the fresh variables as fixed types.
    *
    * <p>Registering the same site again returns the same fresh type variables, preserving their
    * identity in existing constraints. Later registrations retain additional bound and javac

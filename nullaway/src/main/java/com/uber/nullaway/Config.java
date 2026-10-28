@@ -271,6 +271,7 @@ public interface Config {
 
   /**
    * Gets the set of classes that should be treated as equivalent to a Guava fluent futures class.
+   * The option has no effect in JSpecify mode.
    *
    * @see com.uber.nullaway.handlers.temporary.FluentFutureHandler
    */
@@ -310,6 +311,9 @@ public interface Config {
 
   /** Should new checks based on JSpecify (like checks for generic types) be enabled? */
   boolean isJSpecifyMode();
+
+  /** Should PolyNull library models be enabled? */
+  boolean isPolyNullLibraryModelsEnabled();
 
   /** Should wildcard-aware generic nullability checks be enabled? */
   boolean handleWildcardGenerics();

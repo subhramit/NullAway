@@ -43,6 +43,105 @@ public class CustomLibraryModelsTests {
   @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
   @Test
+  public void conditionalReturnMethodReferenceChecksEveryModeledParameter() {
+    makeLibraryModelsTestHelperWithArgs(
+            JSpecifyJavacConfig.withJSpecifyModeArgs(
+                List.of("-XepOpt:NullAway:OnlyNullMarked=true")))
+        .addSourceLines(
+            "Test.java",
+            """
+            import com.uber.lib.unannotated.ConditionalReturns;
+            import java.util.function.BiFunction;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+
+            @NullMarked
+            class Test {
+              BiFunction<Object, Object, Object> nonNullInputs() {
+                return ConditionalReturns::both;
+              }
+
+              BiFunction<@Nullable Object, Object, Object> nullableFirstInput() {
+                // BUG: Diagnostic contains: referenced method returns @Nullable
+                return ConditionalReturns::both;
+              }
+
+              BiFunction<Object, @Nullable Object, Object> nullableSecondInput() {
+                // BUG: Diagnostic contains: referenced method returns @Nullable
+                return ConditionalReturns::both;
+              }
+
+              BiFunction<@Nullable Object, @Nullable Object, @Nullable Object> nullableResult() {
+                return ConditionalReturns::both;
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void nullableReturnModelOnConstructorReferenceDoesNotCrash() {
+    makeLibraryModelsTestHelperWithArgs(
+            JSpecifyJavacConfig.withJSpecifyModeArgs(
+                List.of("-XepOpt:NullAway:OnlyNullMarked=true")))
+        .addSourceLines(
+            "Test.java",
+            """
+            import com.uber.lib.unannotated.ConditionalReturns;
+            import java.util.function.Function;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+
+            @NullMarked
+            class Test {
+              // Even a nullable return model cannot make a constructor allocation nullable.
+              Function<Object, ConditionalReturns> nonNullInput() {
+                return ConditionalReturns::new;
+              }
+
+              Function<@Nullable Object, ConditionalReturns> nullableInput() {
+                return ConditionalReturns::new;
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  /** Pins the existing conservative behavior: references to varargs methods skip the hook. */
+  @Test
+  public void conditionalReturnModelDoesNotRefineVarargsMethodReference() {
+    makeLibraryModelsTestHelperWithArgs(
+            JSpecifyJavacConfig.withJSpecifyModeArgs(
+                List.of("-XepOpt:NullAway:OnlyNullMarked=true")))
+        .addSourceLines(
+            "Test.java",
+            """
+            import com.uber.lib.unannotated.ConditionalReturns;
+            import java.util.function.Function;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+
+            @NullMarked
+            class Test {
+              Function<Object[], Object> fixedArity() {
+                // BUG: Diagnostic contains: referenced method returns @Nullable
+                return ConditionalReturns::varargs;
+              }
+
+              Function<Object, Object> variableArity() {
+                // BUG: Diagnostic contains: referenced method returns @Nullable
+                return ConditionalReturns::varargs;
+              }
+
+              Function<Object[], @Nullable Object> nullableResult() {
+                return ConditionalReturns::varargs;
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
   public void allowLibraryModelsOverrideAnnotations() {
     makeLibraryModelsTestHelperWithArgs(
             Arrays.asList(
@@ -105,6 +204,42 @@ public class CustomLibraryModelsTests {
               void baz() {
                  // Safe to pass, since Function can't have a null instance parameter
                  bar(Object::toString);
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void lambdaReturnIsCheckedAgainstModeledNonNullReturnOfUnannotatedInterface() {
+    makeLibraryModelsTestHelperWithArgs(
+            Arrays.asList(
+                "-d",
+                temporaryFolder.getRoot().getAbsolutePath(),
+                "-XepOpt:NullAway:AnnotatedPackages=com.uber",
+                "-XepOpt:NullAway:UnannotatedSubPackages=com.uber.lib.unannotated"))
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import com.uber.lib.unannotated.NonNullReturnFunction;
+            import java.util.function.Function;
+            class Test {
+              static void takeModeled(NonNullReturnFunction<String, String> f) {}
+              static void takeUnmodeled(Function<String, String> f) {}
+              static void expressionBodyToModeled() {
+                // BUG: Diagnostic contains: returning @Nullable expression
+                takeModeled(x -> null);
+              }
+              static void blockBodyToModeled() {
+                // BUG: Diagnostic contains: returning @Nullable expression
+                takeModeled(x -> { return null; });
+              }
+              static void expressionBodyToUnmodeled() {
+                takeUnmodeled(x -> null);
+              }
+              static void blockBodyToUnmodeled() {
+                takeUnmodeled(x -> { return null; });
               }
             }
             """)
