@@ -9,6 +9,127 @@ import org.junit.Test;
 public class GenericLambdaTests extends NullAwayTestsBase {
 
   @Test
+  public void explicitLambdaParameterAnnotationsControlBodyNullness() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import java.util.List;
+            import org.jspecify.annotations.NonNull;
+            import org.jspecify.annotations.Nullable;
+            class Test {
+              interface Consumer<T extends @Nullable Object> { void accept(T value); }
+
+              Consumer<Object> instanceConsumer;
+              {
+                instanceConsumer = (@Nullable Object parameter) -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter.toString();
+                };
+              }
+              static Consumer<Object> staticConsumer;
+              static {
+                staticConsumer = (@Nullable Object parameter) -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter.toString();
+                };
+              }
+              Consumer<List<@Nullable String>> nestedTypeArgument() {
+                return (List<@Nullable String> parameter) -> { parameter.size(); };
+              }
+
+              Consumer<@Nullable Object> nullableParameterOnNullableTarget() {
+                return (@Nullable Object parameter) -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter.toString();
+                };
+              }
+              Consumer<Object> nullableParameterOnNonNullTarget() {
+                return (@Nullable Object parameter) -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter.toString();
+                };
+              }
+              Consumer<Object> nullCheckRefinesType() {
+                return (@Nullable Object parameter) -> {
+                  if (parameter != null) {
+                    parameter.toString();
+                  }
+                };
+              }
+              Consumer<Object> nonNullParameter() {
+                return (@NonNull Object parameter) -> { parameter.toString(); };
+              }
+              Consumer<Object> unannotatedParameter() {
+                return (Object parameter) -> { parameter.toString(); };
+              }
+              Consumer<@Nullable Object> implicitlyNullableParameter() {
+                return parameter -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter.toString();
+                };
+              }
+              Consumer<Object> declarationAnnotation() {
+                return (@javax.annotation.Nullable Object parameter) -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter.toString();
+                };
+              }
+              interface ArrayConsumer { void accept(String @Nullable [] value); }
+              ArrayConsumer nullableArray() {
+                return (String @Nullable [] parameter) -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  int length = parameter.length;
+                };
+              }
+              interface NullableElementConsumer { void accept(@Nullable String[] value); }
+              NullableElementConsumer nullableElements() {
+                return (@Nullable String[] parameter) -> {
+                  int length = parameter.length;
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter[0].toString();
+                };
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void explicitLambdaParameterAnnotationsInInitializersStandardMode() {
+    makeTestHelperWithArgs(Arrays.asList("-XepOpt:NullAway:AnnotatedPackages=com.uber"))
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import java.util.List;
+            import java.util.function.Consumer;
+            import org.jspecify.annotations.Nullable;
+            class Test {
+              Consumer<Object> instanceConsumer;
+              {
+                instanceConsumer = (@Nullable Object parameter) -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter.toString();
+                };
+              }
+              static Consumer<Object> staticConsumer;
+              static {
+                staticConsumer = (@Nullable Object parameter) -> {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  parameter.toString();
+                };
+              }
+              Consumer<List<@Nullable String>> nestedTypeArgument() {
+                return (List<@Nullable String> parameter) -> { parameter.size(); };
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
   public void lambdaAssignedToLocalRespectsExtendsWildcardBoundNullness() {
     makeHelper()
         .addSourceLines(
@@ -95,6 +216,62 @@ public class GenericLambdaTests extends NullAwayTestsBase {
   }
 
   @Test
+  public void parenthesizedPolyExpressionAssignedToFieldUsesAnnotatedTypeVar() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            import java.util.function.Function;
+            @NullMarked
+            class Test {
+              static class Box<T extends @Nullable CharSequence> {
+                @Nullable Function<@Nullable T, T> field;
+              }
+              static String requireNonNull(String s) {
+                return s;
+              }
+              static @Nullable String acceptNullable(@Nullable String s) {
+                return s;
+              }
+              void assignLambda(Box<String> box) {
+                box.field = (t -> {
+                  // BUG: Diagnostic contains: dereferenced expression 't' is @Nullable
+                  t.length();
+                  return "";
+                });
+              }
+              void assignDoublyParenthesizedLambda(Box<String> box) {
+                box.field = ((t -> {
+                  // BUG: Diagnostic contains: dereferenced expression 't' is @Nullable
+                  t.length();
+                  return "";
+                }));
+              }
+              void assignMethodRef(Box<String> box) {
+                // BUG: Diagnostic contains: parameter s of referenced method is @NonNull
+                box.field = Test::requireNonNull;
+              }
+              void assignParenthesizedMethodRef(Box<String> box) {
+                // BUG: Diagnostic contains: parameter s of referenced method is @NonNull
+                box.field = (Test::requireNonNull);
+              }
+              void assignNullableReturningMethodRef(Box<String> box) {
+                // BUG: Diagnostic contains: referenced method returns @Nullable
+                box.field = Test::acceptNullable;
+              }
+              void assignParenthesizedNullableReturningMethodRef(Box<String> box) {
+                // BUG: Diagnostic contains: referenced method returns @Nullable
+                box.field = (Test::acceptNullable);
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
   public void lambdaReturnedUsesAnnotatedTypeVar() {
     makeHelper()
         .addSourceLines(
@@ -149,6 +326,168 @@ public class GenericLambdaTests extends NullAwayTestsBase {
                     (@Nullable String t) -> {
                       return "hello";
                     });
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void explicitlyTypedLambdaParameterTypeArguments() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            import java.util.List;
+            import java.util.function.BiConsumer;
+            import java.util.function.Consumer;
+            @NullMarked
+            class Test {
+              interface NullableElementsFi {
+                void apply(List<@Nullable String> list);
+              }
+              interface NonNullElementsFi {
+                void apply(List<String> list);
+              }
+              interface RawListFi {
+                @SuppressWarnings("rawtypes")
+                void apply(List list);
+              }
+              static void take(Consumer<List<@Nullable String>> consumer) {}
+              @SuppressWarnings("rawtypes")
+              void testRaw() {
+                Consumer rawTarget = (Object o) -> {};
+                RawListFi rawParameter = (List list) -> {};
+              }
+              void test() {
+                // BUG: Diagnostic contains: Parameter has type List<String>, but overridden method has parameter type List<@Nullable String>
+                NullableElementsFi nonNullElements = (List<String> list) -> {};
+                NullableElementsFi nullableElements = (List<@Nullable String> list) -> {};
+                NullableElementsFi implicit = list -> {};
+                // BUG: Diagnostic contains: Parameter has type List<@Nullable String>, but overridden method has parameter type List<String>
+                NonNullElementsFi invariant = (List<@Nullable String> list) -> {};
+                // BUG: Diagnostic contains: Parameter has type List<String>, but overridden method has parameter type List<@Nullable String>
+                Consumer<List<@Nullable String>> local = (List<String> list) -> {};
+                Consumer<List<@Nullable String>> localMatching = (List<@Nullable String> list) -> {};
+                // BUG: Diagnostic contains: Parameter has type List<String>, but overridden method has parameter type List<@Nullable String>
+                Consumer<? super List<@Nullable String>> wildcard = (List<String> list) -> {};
+                Consumer<? super List<@Nullable String>> wildcardMatching = (List<@Nullable String> list) -> {};
+                // BUG: Diagnostic contains: Parameter has type List<String>, but overridden method has parameter type List<@Nullable String>
+                Consumer<? extends List<@Nullable String>> extendsWildcard = (List<String> list) -> {};
+                Consumer<? extends List<@Nullable String>> extendsMatching = (List<@Nullable String> list) -> {};
+                BiConsumer<List<String>, List<@Nullable String>> second =
+                    // BUG: Diagnostic contains: Parameter has type List<String>, but overridden method has parameter type List<@Nullable String>
+                    (List<String> first, List<String> list) -> {};
+                BiConsumer<List<String>, List<@Nullable String>> bothMatching =
+                    (List<String> first, List<@Nullable String> list) -> {};
+                // BUG: Diagnostic contains: Parameter has type List<String>, but overridden method has parameter type List<@Nullable String>
+                take((List<String> list) -> {});
+                take((List<@Nullable String> list) -> {});
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void explicitlyTypedLambdaParameterTypeArgumentsInferGenericMethodTypeArgument() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            import java.util.List;
+            import java.util.function.Consumer;
+            @NullMarked
+            class Test {
+              static <T extends @Nullable Object> void take(Consumer<List<T>> consumer) {}
+              static <T> void takeNonNull(Consumer<List<T>> consumer) {}
+              static <T extends @Nullable Object> void takeWith(List<T> list, Consumer<List<T>> consumer) {}
+              static <T extends @Nullable Object> void takeValue(T value, Consumer<T> consumer) {}
+              void test(List<@Nullable String> nullableElements, List<String> nonNullElements) {
+                take((List<@Nullable String> list) -> {});
+                take((List<String> list) -> {});
+                // BUG: Diagnostic contains: Parameter has type List<@Nullable String>, but overridden method has parameter type List<String>
+                takeNonNull((List<@Nullable String> list) -> {});
+                takeWith(nullableElements, (List<@Nullable String> list) -> {});
+                takeWith(nonNullElements, (List<String> list) -> {});
+                // BUG: Diagnostic contains: Parameter has type List<@Nullable String>, but overridden method has parameter type List<String>
+                takeWith(nonNullElements, (List<@Nullable String> list) -> {});
+                // BUG: Diagnostic contains: parameter s is @NonNull, but parameter in functional interface method
+                takeValue(null, (String s) -> {});
+              }
+              interface RawListFi {
+                @SuppressWarnings("rawtypes")
+                void apply(List list);
+              }
+              static <T> void takeRaw(T value, RawListFi consumer) {}
+              @SuppressWarnings("rawtypes")
+              void testRaw() {
+                takeRaw("", (List list) -> {});
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  /**
+   * Type-argument nullness of an explicit lambda parameter is compared only against a marked
+   * functional interface method, as for the parameters of an overriding method.
+   */
+  @Test
+  public void explicitlyTypedLambdaParameterTypeArgumentsCheckedOnlyAgainstMarkedInterface() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.NullUnmarked;
+            import org.jspecify.annotations.Nullable;
+            import java.util.List;
+            @NullMarked
+            class Test {
+              @NullUnmarked
+              interface UnmarkedFi {
+                void apply(List<String> list);
+              }
+              interface MarkedFi {
+                void apply(List<String> list);
+              }
+              void unmarked() {
+                UnmarkedFi nullableElements = (List<@Nullable String> list) -> {};
+              }
+              void marked() {
+                // BUG: Diagnostic contains: Parameter has type List<@Nullable String>, but overridden method has parameter type List<String>
+                MarkedFi nullableElements = (List<@Nullable String> list) -> {};
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void explicitlyTypedLambdaParameterTypeArgumentsOutsideJSpecifyMode() {
+    makeTestHelperWithArgs(Arrays.asList("-XepOpt:NullAway:AnnotatedPackages=com.uber"))
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            import java.util.List;
+            @NullMarked
+            class Test {
+              interface NullableElementsFi {
+                void apply(List<@Nullable String> list);
+              }
+              void test() {
+                NullableElementsFi nonNullElements = (List<String> list) -> {};
               }
             }
             """)
@@ -263,9 +602,143 @@ public class GenericLambdaTests extends NullAwayTestsBase {
         .doTest();
   }
 
+  /**
+   * Type-argument nullness of a method reference passed as an argument is compared only against a
+   * marked functional interface method, as the arguments of a call to an unmarked method are not
+   * checked. JDK functional interfaces are still checked.
+   */
+  @Test
+  public void methodReferenceArgumentTypeArgumentsCheckedOnlyAgainstMarkedInterface() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.NullUnmarked;
+            import org.jspecify.annotations.Nullable;
+            import java.util.List;
+            import java.util.function.Consumer;
+            import java.util.function.Supplier;
+            @NullMarked
+            class Test {
+              @NullUnmarked
+              interface UnmarkedConsumer {
+                void apply(List<String> list);
+              }
+              @NullUnmarked
+              interface UnmarkedSupplier {
+                List<String> get();
+              }
+              @NullUnmarked
+              interface UnmarkedFn<T> {
+                void apply(T t);
+              }
+              interface MarkedConsumer {
+                void apply(List<String> list);
+              }
+              interface MarkedSupplier {
+                List<String> get();
+              }
+              static void takeNullableElements(List<@Nullable String> list) {}
+              static List<@Nullable String> returnNullableElements() {
+                throw new RuntimeException();
+              }
+              static void useUnmarkedConsumer(UnmarkedConsumer c) {}
+              static void useUnmarkedSupplier(UnmarkedSupplier s) {}
+              static void useUnmarkedFn(UnmarkedFn<List<String>> f) {}
+              static void useMarkedConsumer(MarkedConsumer c) {}
+              static void useMarkedSupplier(MarkedSupplier s) {}
+              static void useJdkConsumer(Consumer<List<String>> c) {}
+              static void useJdkSupplier(Supplier<List<String>> s) {}
+              void unmarkedParameter() {
+                useUnmarkedConsumer(Test::takeNullableElements);
+              }
+              void unmarkedReturn() {
+                useUnmarkedSupplier(Test::returnNullableElements);
+              }
+              void unmarkedGenericParameter() {
+                useUnmarkedFn(Test::takeNullableElements);
+              }
+              void markedParameter() {
+                // BUG: Diagnostic contains: parameter type of referenced method is List<@Nullable String>, but parameter in functional interface method has type List<String>
+                useMarkedConsumer(Test::takeNullableElements);
+              }
+              void markedReturn() {
+                // BUG: Diagnostic contains: referenced method returns List<@Nullable String>, but functional interface method
+                useMarkedSupplier(Test::returnNullableElements);
+              }
+              void jdkParameter() {
+                // BUG: Diagnostic contains: parameter type of referenced method is List<@Nullable String>, but parameter in functional interface method has type List<String>
+                useJdkConsumer(Test::takeNullableElements);
+              }
+              void jdkReturn() {
+                // BUG: Diagnostic contains: referenced method returns List<@Nullable String>, but functional interface method
+                useJdkSupplier(Test::returnNullableElements);
+              }
+            }
+            """)
+        .doTest();
+  }
+
   private CompilationTestHelper makeHelper() {
     return makeTestHelperWithArgs(
         JSpecifyJavacConfig.withJSpecifyModeArgs(
             Arrays.asList("-XepOpt:NullAway:AnnotatedPackages=com.uber")));
+  }
+
+  @Test
+  public void lambdaReturnTypeArgumentsAreCheckedOnlyAgainstMarkedInterface() {
+    makeHelper()
+        .addSourceLines(
+            "UnmarkedListSupplier.java",
+            """
+            package com.example.unmarked;
+            import java.util.List;
+            public interface UnmarkedListSupplier {
+              List<String> get();
+            }
+            """)
+        .addSourceLines(
+            "MarkedListSupplier.java",
+            """
+            package com.uber;
+            import java.util.List;
+            import org.jspecify.annotations.NullMarked;
+            @NullMarked
+            public interface MarkedListSupplier {
+              List<String> get();
+            }
+            """)
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import com.example.unmarked.UnmarkedListSupplier;
+            import java.util.List;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              void expressionBodyToUnmarkedInterface(List<@Nullable String> l) {
+                UnmarkedListSupplier s = () -> l;
+              }
+              void blockBodyToUnmarkedInterface(List<@Nullable String> l) {
+                UnmarkedListSupplier s = () -> { return l; };
+              }
+              void expressionBodyToMarkedInterface(List<@Nullable String> l) {
+                // BUG: Diagnostic contains: incompatible types: List<@Nullable String> cannot be converted to List<String>
+                MarkedListSupplier s = () -> l;
+              }
+              void blockBodyToMarkedInterface(List<@Nullable String> l) {
+                // BUG: Diagnostic contains: incompatible types: List<@Nullable String> cannot be converted to List<String>
+                MarkedListSupplier s = () -> { return l; };
+              }
+              void matchingTypeArgumentsToMarkedInterface(List<String> l) {
+                MarkedListSupplier s = () -> l;
+              }
+            }
+            """)
+        .doTest();
   }
 }
