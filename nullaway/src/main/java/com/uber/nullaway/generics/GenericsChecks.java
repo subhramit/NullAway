@@ -6186,9 +6186,9 @@ public final class GenericsChecks {
    * Returns the nullness of a value read from {@code type}. For wildcard and javac captured
    * wildcard types, uses the effective upper bound: a read from {@code Foo<? extends @Nullable
    * Object>} or {@code Foo<? super String>} can produce any value permitted by the capture's upper
-   * bound when wildcard handling is enabled. With wildcard handling disabled, upper-bound
-   * nullability does not qualify the read; explicit root annotations still apply, and the type's
-   * nested structure remains available for compatibility checks.
+   * bound when wildcard handling is enabled. With wildcard handling disabled, only root annotations
+   * on the type or its explicit {@code extends} bound qualify the read; implicit formal bounds are
+   * not followed. Nested structure remains available for compatibility checks.
    *
    * @param type type from which a value is read
    * @param state visitor state
@@ -6202,8 +6202,9 @@ public final class GenericsChecks {
   /**
    * Determines whether a substituted input type guarantees a non-null value. When wildcard support
    * is enabled, wildcards and captured wildcards use the nullness of their effective upper bound.
-   * An unsubstituted type variable with a nullable upper bound leaves its nullness unresolved
-   * unless its use is explicitly non-null.
+   * With wildcard support disabled, an explicit {@code extends} bound's root annotation still
+   * applies, but implicit formal bounds are ignored. An unsubstituted type variable with a nullable
+   * upper bound leaves its nullness unresolved unless its use is explicitly non-null.
    *
    * @param type substituted input type
    * @param state visitor state
@@ -6253,7 +6254,13 @@ public final class GenericsChecks {
     if (Nullness.hasNonNullAnnotation(type.getAnnotationMirrors().stream(), config)) {
       return Nullness.NONNULL;
     }
-    if (config.handleWildcardGenerics() && GenericsUtils.asWildcard(type) != null) {
+    Type.WildcardType wildcard = GenericsUtils.asWildcard(type);
+    if (wildcard != null) {
+      if (!config.handleWildcardGenerics()) {
+        return wildcard.kind == BoundKind.EXTENDS
+            ? getTypeNullness(castToNonNull(wildcard.getExtendsBound()), config)
+            : Nullness.NONNULL;
+      }
       Type effectiveUpperBound =
           GenericsUtils.effectiveWildcardUpperBound(type, state, config, handler);
       return getTypeNullnessForRead(
