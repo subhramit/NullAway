@@ -6,7 +6,6 @@ import com.uber.nullaway.generics.JSpecifyJavacConfig;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.Assume;
-import org.junit.Ignore;
 import org.junit.Test;
 
 public class GenericsTests extends NullAwayTestsBase {
@@ -281,6 +280,7 @@ public class GenericsTests extends NullAwayTestsBase {
                       @Override
                       public void onResult(@Nullable Integer value) {
                         removeCallback(this);
+                        Callback<@Nullable Integer> self = this;
                       }
                       void callOnResult() {
                         this.onResult(null);
@@ -295,6 +295,8 @@ public class GenericsTests extends NullAwayTestsBase {
                       public void onResult(Integer value) {
                         // BUG: Diagnostic contains: incompatible types: Callback<Integer> cannot be converted to Callback<@Nullable Integer>
                         removeCallback(this);
+                        // BUG: Diagnostic contains: incompatible types: Callback<Integer> cannot be converted to Callback<@Nullable Integer>
+                        Callback<@Nullable Integer> self = this;
                       }
                       void callOnResult() {
                         // BUG: Diagnostic contains: passing @Nullable parameter 'null'
@@ -2329,6 +2331,82 @@ public class GenericsTests extends NullAwayTestsBase {
         .doTest();
   }
 
+  /**
+   * Type-argument nullness of an override is compared only against a marked overridden method; the
+   * type arguments of an unmarked one have unspecified nullness, as for the parameters of an
+   * unmarked method a call passes arguments to.
+   */
+  @Test
+  public void overrideTypeArgumentNullnessCheckedOnlyAgainstMarkedMethod() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import java.util.List;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.NullUnmarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              @NullUnmarked
+              interface UnmarkedListSupplier {
+                List<String> get();
+              }
+              @NullUnmarked
+              interface UnmarkedListConsumer {
+                void accept(List<String> list);
+              }
+              interface MarkedListSupplier {
+                List<String> get();
+              }
+              interface MarkedListConsumer {
+                void accept(List<String> list);
+              }
+              static class UnmarkedReturn implements UnmarkedListSupplier {
+                @Override
+                public List<@Nullable String> get() {
+                  throw new UnsupportedOperationException();
+                }
+              }
+              static class UnmarkedParameter implements UnmarkedListConsumer {
+                @Override
+                public void accept(List<@Nullable String> list) {}
+              }
+              static UnmarkedListSupplier unmarkedAnonymousReturn() {
+                return new UnmarkedListSupplier() {
+                  @Override
+                  public List<@Nullable String> get() {
+                    throw new UnsupportedOperationException();
+                  }
+                };
+              }
+              static class MarkedReturn implements MarkedListSupplier {
+                @Override
+                // BUG: Diagnostic contains: Method returns List<@Nullable String>, but overridden method returns List<String>
+                public List<@Nullable String> get() {
+                  throw new UnsupportedOperationException();
+                }
+              }
+              static class MarkedParameter implements MarkedListConsumer {
+                @Override
+                // BUG: Diagnostic contains: Parameter has type List<@Nullable String>, but overridden method has parameter type List<String>
+                public void accept(List<@Nullable String> list) {}
+              }
+              static MarkedListSupplier markedAnonymousReturn() {
+                return new MarkedListSupplier() {
+                  @Override
+                  // BUG: Diagnostic contains: Method returns List<@Nullable String>, but overridden method returns List<String>
+                  public List<@Nullable String> get() {
+                    throw new UnsupportedOperationException();
+                  }
+                };
+              }
+            }
+            """)
+        .doTest();
+  }
+
   @Test
   public void passAnnotatedLambdaOrMethodRefToUnannotatedCode() {
     makeHelper()
@@ -2358,6 +2436,86 @@ public class GenericsTests extends NullAwayTestsBase {
                   // no error here since C1 is @NullUnmarked
                   C1.foo(C2::baz);
                 }
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  /**
+   * The exemption for unmarked callees holds for a lambda or method reference wrapped in
+   * parentheses, and parentheses do not extend it to a marked callee. The wrapped forms used to be
+   * reported as if the callee were marked (issue #1993).
+   */
+  @Test
+  public void passParenthesizedLambdaOrMethodRefToUnannotatedCode() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.NullUnmarked;
+            import org.jspecify.annotations.Nullable;
+            class Test {
+              static interface Fn<S extends @Nullable Object, T extends @Nullable Object> {
+                T apply(S s);
+              }
+              @NullUnmarked
+              static class Unmarked {
+                static void foo(Fn<String, String> f) {}
+              }
+              @NullMarked
+              static class Marked {
+                static void foo(Fn<String, String> f) {}
+              }
+              @NullMarked
+              static class C {
+                static @Nullable String baz(String s) { return null; }
+                static void unmarkedCallee() {
+                  Unmarked.foo((s -> null));
+                  Unmarked.foo(((s -> null)));
+                  Unmarked.foo((s -> { return null; }));
+                  Unmarked.foo((C::baz));
+                  Unmarked.foo(((C::baz)));
+                }
+                static void markedCallee() {
+                  // BUG: Diagnostic contains: returning @Nullable expression from method with @NonNull return type
+                  Marked.foo((s -> null));
+                  // BUG: Diagnostic contains: referenced method returns @Nullable, but functional interface method
+                  Marked.foo((C::baz));
+                }
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  /**
+   * Parenthesized lambdas and method references passed to the JDK keep the exemption for unmarked
+   * callees when the JSpecify JDK models are off, so {@code Map} and {@code Stream} are unmarked.
+   */
+  @Test
+  public void passParenthesizedLambdaOrMethodRefToUnmarkedJdk() {
+    makeTestHelperWithArgs(
+            List.of(
+                "-XepOpt:NullAway:AnnotatedPackages=com.uber",
+                JSpecifyJavacConfig.JSPECIFY_MODE_FLAG,
+                JSpecifyJavacConfig.ADD_TYPE_ANNOTATIONS_FLAG))
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import java.util.List;
+            import java.util.Map;
+            import org.jspecify.annotations.Nullable;
+            class Test {
+              static @Nullable String toNull(String s) { return null; }
+              void map(List<String> l) {
+                l.stream().map((Test::toNull)).forEach(s -> {});
+              }
+              Object computeIfAbsent(Map<String, Object> m, String key) {
+                return m.computeIfAbsent(key, (k -> null));
               }
             }
             """)
@@ -2856,7 +3014,6 @@ public class GenericsTests extends NullAwayTestsBase {
         .doTest();
   }
 
-  @Ignore("https://github.com/uber/NullAway/issues/1155")
   @Test
   public void callWithConstructorReceiver() {
     makeHelper()
@@ -2871,6 +3028,8 @@ public class GenericsTests extends NullAwayTestsBase {
                 Inner<T> identity() { return this; }
               }
               Inner<@Nullable Object> mThing = new Inner<@Nullable Object>().identity();
+              // BUG: Diagnostic contains: incompatible types: Inner<@Nullable Object> cannot be converted to Inner<Object>
+              Inner<Object> mNonNullThing = new Inner<@Nullable Object>().identity();
             }
             """)
         .doTest();
@@ -3297,6 +3456,136 @@ public class GenericsTests extends NullAwayTestsBase {
                 }
                 @Nullable T test(@Nullable T t) {
                   return func.apply(t);
+                }
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void anImplicitReceiverIsTheInnermostClassWithTheMethodAsAMember() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Base<E extends @Nullable Object> {
+                void put(E element) {}
+              }
+              static class Other<F extends @Nullable Object> {}
+              static class WithPrivate<E extends @Nullable Object> {
+                E value;
+                WithPrivate(E value) {
+                  this.value = value;
+                }
+                private E get() {
+                  return value;
+                }
+                void fromAnAnonymousSubclass() {
+                  new WithPrivate<@Nullable String>(null) {
+                    void call() {
+                      // a private method binds to the declaring class's E, not to @Nullable String
+                      get().hashCode();
+                    }
+                  };
+                }
+              }
+              static class NullableSub extends Base<@Nullable String> {
+                void fromAnAnonymousClassOfAnotherType(@Nullable String value) {
+                  new Other<String>() {
+                    void call() {
+                      put(value);
+                    }
+                  };
+                }
+              }
+              static class NonNullSub extends Base<String> {
+                void fromAnAnonymousClassOfAnotherType(@Nullable String value) {
+                  new Other<String>() {
+                    void call() {
+                      // BUG: Diagnostic contains: passing @Nullable parameter 'value'
+                      put(value);
+                    }
+                  };
+                }
+              }
+              void fromTheAnonymousClass(@Nullable String value) {
+                new Base<@Nullable String>() {
+                  void call() {
+                    put(value);
+                    Runnable r = () -> put(value);
+                  }
+                };
+              }
+              void fromAClassNestedInTheAnonymousClass(@Nullable String value) {
+                new Base<@Nullable String>() {
+                  class Inner {
+                    void call() {
+                      put(value);
+                    }
+                  }
+                };
+              }
+              void fromADiamondAnonymousClass(@Nullable String value) {
+                Base<@Nullable String> base =
+                    new Base<>() {
+                      private void call() {
+                        put(value);
+                      }
+                    };
+              }
+              void toAMethodTheAnonymousClassDeclares(@Nullable String value) {
+                new Base<@Nullable String>() {
+                  void own(String s) {}
+                  void call() {
+                    // BUG: Diagnostic contains: passing @Nullable parameter 'value'
+                    own(value);
+                  }
+                };
+              }
+              void fromAnAnonymousClassWithANonNullTypeArgument(@Nullable String value) {
+                new Base<String>() {
+                  void call() {
+                    // BUG: Diagnostic contains: passing @Nullable parameter 'value'
+                    put(value);
+                  }
+                  class Inner {
+                    void call() {
+                      // BUG: Diagnostic contains: passing @Nullable parameter 'value'
+                      put(value);
+                    }
+                  }
+                };
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void aConstructorCallTakesTheCallingClassAsItsReceiver() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test<E extends @Nullable Object> {
+              private Test(E element) {}
+              static class NullableSub extends Test<@Nullable String> {
+                NullableSub() {
+                  super(null);
+                }
+              }
+              static class NonNullSub extends Test<String> {
+                NonNullSub() {
+                  // BUG: Diagnostic contains: passing @Nullable parameter 'null'
+                  super(null);
                 }
               }
             }

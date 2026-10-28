@@ -23,6 +23,7 @@
 package com.uber.nullaway;
 
 import static com.uber.nullaway.NullAwayTestDataConstants.UTIL_SOURCE;
+import static com.uber.nullaway.generics.JSpecifyJavacConfig.withJSpecifyModeArgs;
 
 import java.util.Arrays;
 import org.junit.Test;
@@ -1561,6 +1562,37 @@ public class CoreTests extends NullAwayTestsBase {
         .doTest();
   }
 
+  /**
+   * An enum constructor's implicit {@code super()} call has no arguments but resolves to {@code
+   * Enum(String, int)}, which NullAway checks once {@code AnnotatedPackages} matches {@code
+   * java.lang}. NullAway used to read the arguments by the callee's parameter positions, and this
+   * call failed with {@code IndexOutOfBoundsException} (issue #848).
+   */
+  @Test
+  public void enumConstructorIsCheckedWhenAnnotatedPackagesMatchesJavaLang() {
+    makeTestHelperWithArgs(
+            Arrays.asList(
+                "-d",
+                temporaryFolder.getRoot().getAbsolutePath(),
+                "-XepOpt:NullAway:AnnotatedPackages=[a-zA-Z0-9.]*"))
+        .addSourceLines(
+            "Color.java",
+            """
+            package com.uber;
+            import javax.annotation.Nullable;
+            enum Color {
+              RED("r"),
+              GREEN("g");
+              private final String code;
+              Color(@Nullable String code) {
+                // BUG: Diagnostic contains: dereferenced expression 'code' is @Nullable
+                this.code = code.trim();
+              }
+            }
+            """)
+        .doTest();
+  }
+
   @Test
   public void assertSupportPositiveCases() {
     defaultCompilationHelper
@@ -1775,6 +1807,125 @@ public class CoreTests extends NullAwayTestsBase {
                 Integer y = null;
                 // BUG: Diagnostic contains: unboxing of a @Nullable expression
                 foo(y);
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  /**
+   * A {@code @Nullable} annotation on a primitive-typed method, field, or parameter does not make
+   * its value nullable, since a primitive value cannot be null; the same uses of a {@code @Nullable
+   * Integer} or {@code @Nullable int[]} are still reported. Passing, returning, or assigning the
+   * value of such a method or field used to be reported as a {@code @Nullable} expression (issue
+   * #662).
+   */
+  @Test
+  public void nullableAnnotationOnPrimitiveDoesNotMakeValueNullable() {
+    defaultCompilationHelper
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import javax.annotation.Nullable;
+            class Test {
+              @Nullable int primitiveMethod() { return 0; }
+              @Nullable Integer boxedMethod() { return null; }
+              @Nullable int primitiveField;
+              @Nullable Integer boxedField;
+              @Nullable int[] arrayMethod() { return null; }
+              Object objectField = new Object();
+              void takeInt(int i) {}
+              void takeObject(Object o) {}
+              void arguments() {
+                takeInt(primitiveMethod());
+                takeInt(primitiveField);
+                takeObject(primitiveMethod());
+                takeObject(primitiveField);
+                // BUG: Diagnostic contains: passing @Nullable parameter 'boxedMethod()'
+                takeObject(boxedMethod());
+                // BUG: Diagnostic contains: passing @Nullable parameter 'boxedField'
+                takeObject(boxedField);
+                // BUG: Diagnostic contains: passing @Nullable parameter 'arrayMethod()'
+                takeObject(arrayMethod());
+              }
+              void primitiveParameter(@Nullable int p) {
+                takeObject(p);
+              }
+              void boxedParameter(@Nullable Integer p) {
+                // BUG: Diagnostic contains: passing @Nullable parameter 'p'
+                takeObject(p);
+              }
+              Object returnPrimitive() {
+                return primitiveMethod();
+              }
+              Object returnBoxed() {
+                // BUG: Diagnostic contains: returning @Nullable expression
+                return boxedMethod();
+              }
+              void assignPrimitive() {
+                objectField = primitiveField;
+              }
+              void assignBoxed() {
+                // BUG: Diagnostic contains: assigning @Nullable expression
+                objectField = boxedField;
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void jspecifyNullableOnPrimitiveDoesNotMakeValueNullableInJSpecifyMode() {
+    makeTestHelperWithArgs(
+            withJSpecifyModeArgs(
+                Arrays.asList(
+                    "-d",
+                    temporaryFolder.getRoot().getAbsolutePath(),
+                    "-XepOpt:NullAway:AnnotatedPackages=com.uber")))
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import org.jspecify.annotations.Nullable;
+            @SuppressWarnings("JSpecifyUnrecognizedAnnotationLocation")
+            class Test {
+              @Nullable int primitiveMethod() { return 0; }
+              @Nullable Integer boxedMethod() { return null; }
+              @Nullable int primitiveField;
+              void takeInt(int i) {}
+              void takeObject(Object o) {}
+              void arguments() {
+                takeInt(primitiveMethod());
+                takeInt(primitiveField);
+                takeObject(primitiveMethod());
+                // BUG: Diagnostic contains: passing @Nullable parameter 'boxedMethod()'
+                takeObject(boxedMethod());
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void castToNonNullOfNullableAnnotatedPrimitiveIsReported() {
+    defaultCompilationHelper
+        .addSourceLines("Util.java", UTIL_SOURCE)
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import javax.annotation.Nullable;
+            import static com.uber.nullaway.testdata.Util.castToNonNull;
+            class Test {
+              @Nullable int primitiveMethod() { return 0; }
+              @Nullable Integer boxedMethod() { return null; }
+              Object castPrimitive() {
+                // BUG: Diagnostic contains: passing known @NonNull parameter 'primitiveMethod()'
+                return castToNonNull(primitiveMethod());
+              }
+              Object castBoxed() {
+                return castToNonNull(boxedMethod());
               }
             }
             """)
@@ -2400,7 +2551,10 @@ public class CoreTests extends NullAwayTestsBase {
                  // BUG: Diagnostic contains: returning @Nullable expression from method with @NonNull return type
                  return m.get(key);
                }
-               // ToDo: should error somewhere, but doesn't, due to limited checking of generics
+               // No error expected here, as we are outside JSpecify mode (we do not plan to report errors for such
+               // code outside of JSpecify mode).  We have a separate test
+               // PolyNullLibraryModelsTests.mapComputeIfAbsentAndKeyPresence that shows an error is reported for a
+               // similar case in JSpecify mode.
                Object testComputeIfAbsentNullLambda(String key, Map<String, Object> m){
                  m.computeIfAbsent(key, k -> null);
                  return m.get(key);
@@ -3218,6 +3372,84 @@ public class CoreTests extends NullAwayTestsBase {
                   return t + 1;
                 }
                 return 0;
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void unboxingOfConditionalOperands() {
+    defaultCompilationHelper
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import javax.annotation.Nullable;
+            class Test {
+              static void takeInt(int i) {}
+              static int returned(boolean b, @Nullable Integer n) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable expression 'n'
+                return b ? 1 : n;
+              }
+              static int trueOperand(boolean b, @Nullable Integer n) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable expression 'n'
+                int x = b ? n : 1;
+                return x;
+              }
+              static Integer boxedTarget(boolean b, @Nullable Integer n) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable expression 'n'
+                Integer x = b ? 1 : n;
+                return x;
+              }
+              static void argument(boolean b, @Nullable Integer n) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable expression 'n'
+                takeInt(b ? 1 : n);
+              }
+              static boolean booleanConditional(boolean b, @Nullable Boolean n) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable expression 'n'
+                return b ? true : n;
+              }
+              static int nullChecked(@Nullable Integer n) {
+                return n != null ? n : 0;
+              }
+              static int referenceConditional(boolean b, @Nullable Integer n, Integer m) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable expression
+                return b ?
+                    n :
+                    m;
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void unboxingOfConditionalOperandsWithBoxedBoundTypeVariables() {
+    defaultCompilationHelper
+        .addSourceLines(
+            "Test.java",
+            """
+            package com.uber;
+            import javax.annotation.Nullable;
+            class Test<U extends Double, B extends Boolean> {
+              double sameTypeVariable(boolean b, @Nullable U n, U m) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable expression 'n'
+                double x = b ? n :
+                    m;
+                return x;
+              }
+              Boolean castToBoxedType(boolean b, @Nullable B n) {
+                // BUG: Diagnostic contains: unboxing of a @Nullable expression 'n'
+                Boolean r = (Boolean) (b ? Boolean.TRUE : n);
+                return r;
+              }
+              Boolean referenceConditional(boolean b, @Nullable B n) {
+                Boolean r = b
+                    ? Boolean.TRUE
+                    : n;
+                // BUG: Diagnostic contains: returning @Nullable expression
+                return r;
               }
             }
             """)
