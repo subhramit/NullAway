@@ -336,110 +336,119 @@ public class InferenceLowerBoundRegressionTests extends NullAwayTestsBase {
 
   @Test
   public void ordinaryReferenceConflictsRetainBothSourcesInEitherOrder() {
-    for (boolean reverse : List.of(false, true)) {
-      String first = reverse ? "Test::clean" : "Test::nullable";
-      String second = reverse ? "Test::nullable" : "Test::clean";
-      List<String> diagnostics =
-          compileDiagnostics(
-              """
-              package com.uber;
-              import java.util.ArrayList;
-              import java.util.LinkedList;
-              import java.util.List;
-              import java.util.function.Supplier;
-              import org.jspecify.annotations.NullMarked;
-              import org.jspecify.annotations.Nullable;
-              @NullMarked
-              class Test {
-                static ArrayList<@Nullable String> nullable() { throw new RuntimeException(); }
-                static LinkedList<String> clean() { throw new RuntimeException(); }
-                static <T> T from(Supplier<? extends T> a, Supplier<? extends T> b) { return a.get(); }
-                void test() {
-                  List<String> result = from(
-                      %s,
-                      %s);
-                }
+    checkOrdinaryReferenceConflictsRetainBothSources(false);
+    checkOrdinaryReferenceConflictsRetainBothSources(true);
+  }
+
+  /** Checks that both method-reference sources are retained in the selected argument order. */
+  private void checkOrdinaryReferenceConflictsRetainBothSources(boolean reverse) {
+    String first = reverse ? "Test::clean" : "Test::nullable";
+    String second = reverse ? "Test::nullable" : "Test::clean";
+    List<String> diagnostics =
+        compileDiagnostics(
+            """
+            package com.uber;
+            import java.util.ArrayList;
+            import java.util.LinkedList;
+            import java.util.List;
+            import java.util.function.Supplier;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static ArrayList<@Nullable String> nullable() { throw new RuntimeException(); }
+              static LinkedList<String> clean() { throw new RuntimeException(); }
+              static <T> T from(Supplier<? extends T> a, Supplier<? extends T> b) { return a.get(); }
+              void test() {
+                List<String> result = from(
+                    %s,
+                    %s);
               }
-              """
-                  .formatted(first, second));
-      List<String> conflicts =
-          diagnostics.stream()
-              .filter(message -> message.contains("have conflicting nullability"))
-              .toList();
-      assertThat(conflicts).hasSize(1);
-      assertThat(conflicts.get(0)).startsWith("16:");
-      assertThat(conflicts.get(0)).contains("arguments '" + second + "'");
-      assertThat(conflicts.get(0)).contains("and '" + first + "'");
-      assertThat(conflicts.get(0)).contains("ArrayList<@Nullable String>");
-      assertThat(conflicts.get(0)).contains("LinkedList<String>");
-      assertThat(conflicts.get(0)).doesNotContain("lower source");
-    }
+            }
+            """
+                .formatted(first, second));
+    List<String> conflicts =
+        diagnostics.stream()
+            .filter(message -> message.contains("have conflicting nullability"))
+            .toList();
+    assertThat(conflicts).hasSize(1);
+    assertThat(conflicts.get(0)).startsWith("16:");
+    assertThat(conflicts.get(0)).contains("arguments '" + second + "'");
+    assertThat(conflicts.get(0)).contains("and '" + first + "'");
+    assertThat(conflicts.get(0)).contains("ArrayList<@Nullable String>");
+    assertThat(conflicts.get(0)).contains("LinkedList<String>");
+    assertThat(conflicts.get(0)).doesNotContain("lower source");
   }
 
   @Test
   public void independentOuterConflictSurvivesUnavailableSupportAlternative() {
-    for (boolean suppliers : List.of(false, true)) {
-      for (boolean reverse : List.of(false, true)) {
-        String firstInner = reverse ? "Test::clean" : "Test::nullable";
-        String secondInner = reverse ? "Test::nullable" : "Test::clean";
-        String nullableSource = suppliers ? "Test::nullable" : "nullable()";
-        String cleanSource = suppliers ? "Test::clean" : "clean()";
-        String firstOuter = reverse ? cleanSource : nullableSource;
-        String secondOuter = reverse ? nullableSource : cleanSource;
-        List<String> diagnostics =
-            compileDiagnostics(
-                """
-                package com.uber;
-                import java.util.ArrayList;
-                import java.util.LinkedList;
-                import java.util.List;
-                import java.util.function.Supplier;
-                import org.jspecify.annotations.NullMarked;
-                import org.jspecify.annotations.Nullable;
-                @NullMarked
-                class Test {
-                  static ArrayList<@Nullable String> nullable() { throw new RuntimeException(); }
-                  static LinkedList<String> clean() { throw new RuntimeException(); }
-                  static <T> T from(Supplier<? extends T> a, Supplier<? extends T> b) { return a.get(); }
-                  static <U> U from3(U a, Supplier<? extends U> b, Supplier<? extends U> c) { return a; }
-                  static <U> U pick3(U a, U b, U c) { return a; }
-                  void test() {
-                    List<String> result = %s(
-                        from(%s, %s),
-                        %s,
-                        %s);
-                  }
-                }
-                """
-                    .formatted(
-                        suppliers ? "from3" : "pick3",
-                        firstInner,
-                        secondInner,
-                        firstOuter,
-                        secondOuter));
-        List<String> conflicts =
-            diagnostics.stream()
-                .filter(message -> message.contains("have conflicting nullability"))
-                .toList();
-        assertThat(conflicts).hasSize(2);
-        List<String> inner =
-            conflicts.stream().filter(message -> message.contains("for type variable T")).toList();
-        List<String> outer =
-            conflicts.stream().filter(message -> message.contains("for type variable U")).toList();
-        assertThat(inner).hasSize(1);
-        assertThat(outer).hasSize(1);
-        assertThat(inner.get(0)).startsWith("17:");
-        assertThat(inner.get(0)).contains("arguments '" + secondInner + "'");
-        assertThat(inner.get(0)).contains("and '" + firstInner + "'");
-        assertThat(outer.get(0)).startsWith("19:");
-        assertThat(outer.get(0)).contains("arguments '" + secondOuter + "'");
-        assertThat(outer.get(0)).contains("and '" + firstOuter + "'");
-        assertThat(outer.get(0)).contains("ArrayList<@Nullable String>");
-        assertThat(outer.get(0)).contains("LinkedList<String>");
-        assertThat(outer.get(0)).doesNotContain("from(");
-        assertThat(outer.get(0)).doesNotContain("lower source");
-      }
-    }
+    checkIndependentOuterConflictSurvivesUnavailableSupportAlternative(false, false);
+    checkIndependentOuterConflictSurvivesUnavailableSupportAlternative(false, true);
+    checkIndependentOuterConflictSurvivesUnavailableSupportAlternative(true, false);
+    checkIndependentOuterConflictSurvivesUnavailableSupportAlternative(true, true);
+  }
+
+  /** Checks independent outer evidence for the selected source kind and argument order. */
+  private void checkIndependentOuterConflictSurvivesUnavailableSupportAlternative(
+      boolean suppliers, boolean reverse) {
+    String firstInner = reverse ? "Test::clean" : "Test::nullable";
+    String secondInner = reverse ? "Test::nullable" : "Test::clean";
+    String nullableSource = suppliers ? "Test::nullable" : "nullable()";
+    String cleanSource = suppliers ? "Test::clean" : "clean()";
+    String firstOuter = reverse ? cleanSource : nullableSource;
+    String secondOuter = reverse ? nullableSource : cleanSource;
+    List<String> diagnostics =
+        compileDiagnostics(
+            """
+            package com.uber;
+            import java.util.ArrayList;
+            import java.util.LinkedList;
+            import java.util.List;
+            import java.util.function.Supplier;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static ArrayList<@Nullable String> nullable() { throw new RuntimeException(); }
+              static LinkedList<String> clean() { throw new RuntimeException(); }
+              static <T> T from(Supplier<? extends T> a, Supplier<? extends T> b) { return a.get(); }
+              static <U> U from3(U a, Supplier<? extends U> b, Supplier<? extends U> c) { return a; }
+              static <U> U pick3(U a, U b, U c) { return a; }
+              void test() {
+                List<String> result = %s(
+                    from(%s, %s),
+                    %s,
+                    %s);
+              }
+            }
+            """
+                .formatted(
+                    suppliers ? "from3" : "pick3",
+                    firstInner,
+                    secondInner,
+                    firstOuter,
+                    secondOuter));
+    List<String> conflicts =
+        diagnostics.stream()
+            .filter(message -> message.contains("have conflicting nullability"))
+            .toList();
+    assertThat(conflicts).hasSize(2);
+    List<String> inner =
+        conflicts.stream().filter(message -> message.contains("for type variable T")).toList();
+    List<String> outer =
+        conflicts.stream().filter(message -> message.contains("for type variable U")).toList();
+    assertThat(inner).hasSize(1);
+    assertThat(outer).hasSize(1);
+    assertThat(inner.get(0)).startsWith("17:");
+    assertThat(inner.get(0)).contains("arguments '" + secondInner + "'");
+    assertThat(inner.get(0)).contains("and '" + firstInner + "'");
+    assertThat(outer.get(0)).startsWith("19:");
+    assertThat(outer.get(0)).contains("arguments '" + secondOuter + "'");
+    assertThat(outer.get(0)).contains("and '" + firstOuter + "'");
+    assertThat(outer.get(0)).contains("ArrayList<@Nullable String>");
+    assertThat(outer.get(0)).contains("LinkedList<String>");
+    assertThat(outer.get(0)).doesNotContain("from(");
+    assertThat(outer.get(0)).doesNotContain("lower source");
   }
 
   @Test
