@@ -15,6 +15,7 @@ import com.sun.tools.javac.code.Type.TypeVar;
 import com.sun.tools.javac.code.Type.WildcardType;
 import com.sun.tools.javac.code.TypeTag;
 import com.sun.tools.javac.code.Types;
+import com.sun.tools.javac.util.Name;
 import com.uber.nullaway.CodeAnnotationInfo;
 import com.uber.nullaway.Config;
 import com.uber.nullaway.NullAway;
@@ -22,6 +23,7 @@ import com.uber.nullaway.Nullness;
 import com.uber.nullaway.handlers.Handler;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
@@ -172,11 +174,6 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
      * classes, and symbolic fixed type variables. Non-generic subclasses are kept because alignment
      * to a generic supertype can expose nested nullability.
      */
-    final List<Type> lowerBoundTypes = new ArrayList<>();
-
-    /** Structural fingerprints used to deduplicate {@link #lowerBoundTypes}. */
-    final Set<String> lowerBoundKeys = new LinkedHashSet<>();
-
     final Map<String, BoundEvidence> lowerBoundEvidence = new LinkedHashMap<>();
 
     /** Fixed lower uses that constrain this variable's root, not an annotated projection of it. */
@@ -192,14 +189,10 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
 
     /**
      * Structured types {@code S} with a constraint {@code var <: S}, in the order the constraints
-     * were added. A type appearing in both this list and {@link #lowerBoundTypes} arises from an
-     * equality constraint, e.g., between invariant type arguments.
+     * were added. A type appearing in both this map and {@link #lowerBoundEvidence} arises from an
+     * equality constraint, e.g., between invariant type arguments. Fingerprint keys deduplicate
+     * semantic bounds while the values retain their first type and merged provenance.
      */
-    final List<Type> upperBoundTypes = new ArrayList<>();
-
-    /** Structural fingerprints used to deduplicate {@link #upperBoundTypes}. */
-    final Set<String> upperBoundKeys = new LinkedHashSet<>();
-
     final Map<String, BoundEvidence> upperBoundEvidence = new LinkedHashMap<>();
 
     VarState(boolean nullableAllowed) {
@@ -230,6 +223,15 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
 
   private int structuredBoundsMemoVersion = -1;
 
+  /** Raw path evidence, kept separate from enriched diagnostic context and solved values. */
+  private final Map<ReachableEvidenceKey, List<BoundEvidence>> reachableEvidenceMemo =
+      new LinkedHashMap<>();
+
+  private int reachableEvidenceMemoVersion = -1;
+
+  /** Distinguishes lower and upper traversals of the same structural variable graph. */
+  private record ReachableEvidenceKey(InferenceVariable variable, boolean lower) {}
+
   /**
    * Only structural evidence is memoized after preparation, never nullness or validation outcomes.
    */
@@ -247,12 +249,21 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   /** Diagnostic annotation sources selected independently of structured candidate construction. */
   private final Map<InferenceVariable, Type> declarationBoundFallbacks = new LinkedHashMap<>();
 
-  /** Active directed type pairs, separated by comparison mode and compared by identity. */
+  /** Active directed type pairs; empty mode maps retain their storage, never completed pairs. */
   private final Map<String, IdentityHashMap<Type, Set<Type>>> activeBoundComparisons =
       new LinkedHashMap<>();
 
+  /** Empty identity sets recycled across comparisons, bounded by peak active first-type entries. */
+  private final Deque<Set<Type>> unusedBoundComparisonSets = new ArrayDeque<>();
+
   /** Stable per-run IDs for symbols appearing in structural fingerprints. */
   private final IdentityHashMap<Symbol, Integer> fingerprintSymbolIds = new IdentityHashMap<>();
+
+  /**
+   * Stable per-run IDs for annotation type names in structural fingerprints. javac interns names,
+   * so identity matches string equality within a compilation.
+   */
+  private final IdentityHashMap<Name, Integer> fingerprintNameIds = new IdentityHashMap<>();
 
   /* ───────────────────── public API ───────────────────── */
 
@@ -314,10 +325,8 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
       Type effectiveBound = freshVar.getUpperBound();
       boolean inferredDependency =
           effectiveBound instanceof TypeVar
-              && !Nullness.hasNullableAnnotation(
-                  effectiveBound.getAnnotationMirrors().stream(), config)
-              && !Nullness.hasNonNullAnnotation(
-                  effectiveBound.getAnnotationMirrors().stream(), config)
+              && !Nullness.hasNullableAnnotation(effectiveBound.getAnnotationMirrors(), config)
+              && !Nullness.hasNonNullAnnotation(effectiveBound.getAnnotationMirrors(), config)
               && fresh.values().stream()
                   .anyMatch(variable -> variable.tsym.equals(effectiveBound.tsym));
       if (variablesWithNullnessMarkedBounds.contains(entry.getKey())
@@ -994,6 +1003,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         return null;
       }
       Type candidate = null;
+      Type projectionShape = null;
       for (Type resolved : resolvedSources) {
         Type evidence =
             comparisonEvidence && st.nullness == NullnessState.UNKNOWN
@@ -1007,9 +1017,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
           // symbolic caller variable instead; it has no nested positions to overlay.
           projected = shape;
         } else {
+          if (projectionShape == null) {
+            projectionShape = markNestedTypesNonNull(shape);
+          }
           projected =
               TypeSubstitutionUtils.updateTypeWithInferredNullability(
-                  markNestedTypesNonNull(shape),
+                  projectionShape,
                   declaredTypeVariable,
                   Map.of(inferenceVar.typeVariable(), evidence),
                   state,
@@ -1113,6 +1126,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
             replacements.put(symbol, castToNonNull(result.get(variable)));
           }
         });
+    IdentityHashMap<Type, Type> substitutedBounds = new IdentityHashMap<>();
     for (InferenceVariable variable : vars.keySet()) {
       Type shape = javacInstantiations.get(variable);
       if (shape != null) {
@@ -1120,7 +1134,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         validateLowerAnnotationsAtShape(
             variable,
             bounds.lowerEvidence(),
-            substituteBounds(bounds.lower(), replacements),
+            substituteBounds(bounds.lower(), replacements, substitutedBounds),
             shape);
       }
     }
@@ -1383,11 +1397,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     Map<Element, Type> substitutions = new LinkedHashMap<>();
     inferenceVariables.forEach(
         (symbol, variable) -> substitutions.put(symbol, castToNonNull(result.get(variable))));
+    IdentityHashMap<Type, Type> substitutedBounds = new IdentityHashMap<>();
     for (InferenceVariable variable : result.keySet()) {
       StructuredBounds bounds = structuredBounds(variable);
       Type candidate = result.get(variable);
-      List<Type> lowerBounds = substituteBounds(bounds.lower(), substitutions);
-      List<Type> upperBounds = substituteBounds(bounds.upper(), substitutions);
+      List<Type> lowerBounds = substituteBounds(bounds.lower(), substitutions, substitutedBounds);
+      List<Type> upperBounds = substituteBounds(bounds.upper(), substitutions, substitutedBounds);
       for (Type lower : lowerBounds) {
         recordBoundRelation(
             variable, nullabilitySubtype(lower, candidate, false), incomplete, inconsistent);
@@ -1400,7 +1415,8 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         recordBoundRelation(
             variable, nullabilitySubtype(candidate, upper, false), incomplete, inconsistent);
       }
-      for (Type upper : substituteBounds(bounds.declaredUpper(), substitutions)) {
+      for (Type upper :
+          substituteBounds(bounds.declaredUpper(), substitutions, substitutedBounds)) {
         recordBoundRelation(
             variable, nullabilitySubtype(candidate, upper, false), incomplete, inconsistent);
       }
@@ -1414,13 +1430,21 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     }
   }
 
-  /** Substitutes solved fresh variables while preserving explicit occurrence annotations. */
-  private List<Type> substituteBounds(List<Type> bounds, Map<Element, Type> substitutions) {
-    List<Type> result = new ArrayList<>();
+  /**
+   * Substitutes each shared bound once for a fixed replacement map. The memo belongs to one
+   * validation phase: conflict collection excludes uncertified replacements and uses a separate
+   * memo. Identity keys preserve annotation-distinct occurrences and never outlive bound repair.
+   */
+  private List<Type> substituteBounds(
+      List<Type> bounds, Map<Element, Type> substitutions, IdentityHashMap<Type, Type> memo) {
+    List<Type> result = new ArrayList<>(bounds.size());
     for (Type bound : bounds) {
       result.add(
-          TypeSubstitutionUtils.substituteTypeVariables(
-              bound, substitutions, state.getTypes(), config));
+          memo.computeIfAbsent(
+              bound,
+              type ->
+                  TypeSubstitutionUtils.substituteTypeVariables(
+                      type, substitutions, state.getTypes(), config)));
     }
     return result;
   }
@@ -1507,8 +1531,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     List<Type> evidence = new ArrayList<>();
     VarState st = vars.get(inferenceVar);
     if (st != null) {
-      evidence.addAll(st.lowerBoundTypes);
-      evidence.addAll(st.upperBoundTypes);
+      for (BoundEvidence bound : st.lowerBoundEvidence.values()) {
+        evidence.add(bound.type());
+      }
+      for (BoundEvidence bound : st.upperBoundEvidence.values()) {
+        evidence.add(bound.type());
+      }
     }
     Type.TypeVar freshTypeVariable = freshTypeVariableForInferenceVariable.get(inferenceVar);
     if (freshTypeVariable != null && nullnessMarkedDeclarationBounds.contains(inferenceVar)) {
@@ -1604,6 +1632,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
       versionBeforePass = structuredConstraintVersion;
       for (InferenceVariable inferenceVar : new ArrayList<>(vars.keySet())) {
         addDeclaredUpperBoundEdge(inferenceVar);
+        VarState st = castToNonNull(vars.get(inferenceVar));
+        // Both comparison loops require lower evidence. Recheck on every pass: another
+        // variable can add bounds or subtype edges after this variable has been visited.
+        if (st.lowerBoundEvidence.isEmpty() && st.structuralSubtypes.isEmpty()) {
+          continue;
+        }
         StructuredBounds bounds = structuredBounds(inferenceVar);
         Type shape = javacInstantiations.get(inferenceVar);
         if (shape != null) {
@@ -2105,8 +2139,12 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
    * separately. Both semantic and provenance additions invalidate snapshots.
    */
   private List<BoundEvidence> collectStructuredEvidence(InferenceVariable start, boolean lower) {
-    List<BoundEvidence> result = new ArrayList<>();
-    for (BoundEvidence bound : collectReachableEvidence(start, lower)) {
+    List<BoundEvidence> reachable = collectReachableEvidence(start, lower);
+    if (reachable.isEmpty()) {
+      return List.of();
+    }
+    List<BoundEvidence> result = new ArrayList<>(reachable.size());
+    for (BoundEvidence bound : reachable) {
       result.add(withReferencedOrigins(bound));
     }
     return List.copyOf(result);
@@ -2165,10 +2203,31 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   }
 
   /**
-   * Collects root-edge evidence and its alternative path proofs to a finite, cycle-safe fixed
-   * point.
+   * Reuses completed root-edge evidence at one structural version. Provenance-only additions also
+   * change the version; enriched origins and resolved values are deliberately not cached here.
    */
   private List<BoundEvidence> collectReachableEvidence(InferenceVariable start, boolean lower) {
+    if (lower) {
+      VarState st = vars.get(start);
+      // Declaration bounds contribute only upper evidence; without subtype edges there is
+      // nowhere else to find lower evidence. Do not cache this across graph changes.
+      if (st == null || (st.lowerBoundEvidence.isEmpty() && st.structuralSubtypes.isEmpty())) {
+        return List.of();
+      }
+    }
+    if (reachableEvidenceMemoVersion != structuredConstraintVersion) {
+      reachableEvidenceMemo.clear();
+      reachableEvidenceMemoVersion = structuredConstraintVersion;
+    }
+    return reachableEvidenceMemo.computeIfAbsent(
+        new ReachableEvidenceKey(start, lower),
+        key -> computeReachableEvidence(key.variable(), key.lower()));
+  }
+
+  /**
+   * Collects alternative path proofs to a finite, cycle-safe fixed point before publishing them.
+   */
+  private List<BoundEvidence> computeReachableEvidence(InferenceVariable start, boolean lower) {
     Map<String, BoundEvidence> result = new LinkedHashMap<>();
     Deque<InferenceVariable> worklist = new ArrayDeque<>();
     Map<InferenceVariable, SourceEvidence> pathOrigins = new LinkedHashMap<>();
@@ -2625,25 +2684,35 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         : BoundRelation.SATISFIED;
   }
 
-  /** Starts a comparison unless the same directed identity pair and mode is already active. */
+  /**
+   * Starts a directed identity comparison unless the same pair and mode is already active. Reuses
+   * empty guard storage without retaining any previous comparison's types or outcome.
+   */
   private boolean beginBoundComparison(String mode, Type first, Type second) {
     IdentityHashMap<Type, Set<Type>> pairs =
-        activeBoundComparisons.computeIfAbsent(mode, unused -> new IdentityHashMap<>());
-    Set<Type> seconds =
-        pairs.computeIfAbsent(first, unused -> Collections.newSetFromMap(new IdentityHashMap<>()));
+        activeBoundComparisons.computeIfAbsent(mode, unused -> new IdentityHashMap<>(4));
+    Set<Type> seconds = pairs.get(first);
+    if (seconds == null) {
+      seconds = unusedBoundComparisonSets.pollFirst();
+      if (seconds == null) {
+        seconds = Collections.newSetFromMap(new IdentityHashMap<>(2));
+      }
+      pairs.put(first, seconds);
+    }
     return seconds.add(second);
   }
 
-  /** Removes an active comparison after all its independent positions have been visited. */
+  /**
+   * Removes a comparison on unwind, recycling a set only after its last active pair is gone. Empty
+   * mode maps retain capacity; neither these maps nor pooled sets retain references to prior types.
+   */
   private void endBoundComparison(String mode, Type first, Type second) {
     IdentityHashMap<Type, Set<Type>> pairs = castToNonNull(activeBoundComparisons.get(mode));
     Set<Type> seconds = castToNonNull(pairs.get(first));
     seconds.remove(second);
     if (seconds.isEmpty()) {
       pairs.remove(first);
-    }
-    if (pairs.isEmpty()) {
-      activeBoundComparisons.remove(mode);
+      unusedBoundComparisonSets.addFirst(seconds);
     }
   }
 
@@ -2863,7 +2932,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     if (isKnownNullable(type)) {
       return BoundNullness.NULLABLE;
     }
-    if (Nullness.hasNonNullAnnotation(type.getAnnotationMirrors().stream(), config)) {
+    if (Nullness.hasNonNullAnnotation(type.getAnnotationMirrors(), config)) {
       return BoundNullness.NONNULL;
     }
     InferenceVariable inferenceVariable = inferenceVariableForUse(type);
@@ -2919,15 +2988,10 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         && !(boundType instanceof ClassType)) {
       return;
     }
-    List<Type> bounds = lower ? st.lowerBoundTypes : st.upperBoundTypes;
-    Set<String> keys = lower ? st.lowerBoundKeys : st.upperBoundKeys;
     String key = structuredTypeKey(boundType);
-    boolean changed = keys.add(key);
-    if (changed) {
-      bounds.add(boundType);
-    }
     Map<String, BoundEvidence> evidence = lower ? st.lowerBoundEvidence : st.upperBoundEvidence;
     BoundEvidence previous = evidence.get(key);
+    boolean changed = previous == null;
     List<SourceOrigin> origins =
         previous == null ? currentOrigins : combinedOrigins(previous.origins(), currentOrigins);
     SourceSupport support =
@@ -2948,25 +3012,40 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
    */
   private String structuredTypeKey(Type type) {
     StringBuilder result = new StringBuilder();
-    appendStructuredTypeKey(type, result, new IdentityHashMap<>());
+    appendStructuredTypeKey(type, result, new ArrayList<>(4));
     return result.toString();
   }
 
-  /** Appends one type node to a structured-bound fingerprint, guarding recursive javac types. */
-  private void appendStructuredTypeKey(
-      Type type, StringBuilder result, IdentityHashMap<Type, Boolean> active) {
-    if (active.put(type, Boolean.TRUE) != null) {
-      result.append("cycle@").append(symbolFingerprint(type.tsym));
-      return;
+  /**
+   * Appends one type node to a structured-bound fingerprint, guarding recursive javac types. Class
+   * and variable symbols are named by their per-run ID. Annotation types are named by the per-run
+   * ID of their interned qualified name, so annotations with the same name are equal, as before,
+   * without rendering javac names. {@code active} is the identity stack of enclosing type nodes.
+   */
+  @SuppressWarnings({"ReferenceEquality", "TypeEquals"})
+  private void appendStructuredTypeKey(Type type, StringBuilder result, List<Type> active) {
+    for (Type enclosing : active) {
+      if (enclosing == type) {
+        result.append("cycle@").append(symbolFingerprint(type.tsym));
+        return;
+      }
     }
+    active.add(type);
     try {
       result.append(type.getKind()).append('[');
-      List<String> annotations = new ArrayList<>();
-      for (AnnotationMirror annotation : type.getAnnotationMirrors()) {
-        annotations.add(annotation.getAnnotationType().toString());
+      List<? extends AnnotationMirror> mirrors = type.getAnnotationMirrors();
+      if (!mirrors.isEmpty()) {
+        int[] annotations = new int[mirrors.size()];
+        for (int i = 0; i < annotations.length; i++) {
+          annotations[i] =
+              nameFingerprint(
+                  ((Symbol) mirrors.get(i).getAnnotationType().asElement()).getQualifiedName());
+        }
+        Arrays.sort(annotations);
+        for (int annotation : annotations) {
+          result.append('@').append(annotation).append(';');
+        }
       }
-      Collections.sort(annotations);
-      annotations.forEach(annotation -> result.append(annotation).append(';'));
       result.append(']');
       if (type instanceof Type.ArrayType arrayType) {
         result.append("array(");
@@ -2980,12 +3059,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         }
         result.append(')');
       } else if (type instanceof ClassType classType) {
-        result
-            .append("class:")
-            .append(classType.tsym.getQualifiedName())
-            .append('@')
-            .append(symbolFingerprint(classType.tsym))
-            .append('<');
+        result.append("class@").append(symbolFingerprint(classType.tsym)).append('<');
         for (Type argument : classType.getTypeArguments()) {
           appendStructuredTypeKey(argument, result, active);
           result.append(',');
@@ -3012,8 +3086,19 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         result.append(type);
       }
     } finally {
-      active.remove(type);
+      active.remove(active.size() - 1);
     }
+  }
+
+  /** Returns a collision-free ID for an interned name during this solver run. */
+  private int nameFingerprint(Name name) {
+    Integer existing = fingerprintNameIds.get(name);
+    if (existing != null) {
+      return existing;
+    }
+    int created = fingerprintNameIds.size() + 1;
+    fingerprintNameIds.put(name, created);
+    return created;
   }
 
   /** Returns a collision-free identity ID for a symbol during this solver run. */
@@ -3102,7 +3187,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     }
     Type result = type;
     if (!TypeSubstitutionUtils.hasNullableRoot(type, config)
-        && !Nullness.hasNonNullAnnotation(type.getAnnotationMirrors().stream(), config)) {
+        && !Nullness.hasNonNullAnnotation(type.getAnnotationMirrors(), config)) {
       result =
           TypeSubstitutionUtils.typeWithAnnot(
               type, GenericsChecks.getSyntheticNonNullAnnotType(state));
@@ -3234,7 +3319,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     if (visiting.put(upperBound, Boolean.TRUE) != null) {
       return false;
     }
-    if (Nullness.hasNonNullAnnotation(upperBound.getAnnotationMirrors().stream(), config)) {
+    if (Nullness.hasNonNullAnnotation(upperBound.getAnnotationMirrors(), config)) {
       return false;
     }
     if (TypeSubstitutionUtils.hasNullableRoot(upperBound, config)) {
@@ -3294,8 +3379,8 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     // Only treat as an inference variable if the use _doesn't_ have an explicit @Nullable or
     // @NonNull annotation.
     if (inferenceVar == null
-        || Nullness.hasNullableAnnotation(tv.getAnnotationMirrors().stream(), config)
-        || Nullness.hasNonNullAnnotation(tv.getAnnotationMirrors().stream(), config)) {
+        || Nullness.hasNullableAnnotation(tv.getAnnotationMirrors(), config)
+        || Nullness.hasNonNullAnnotation(tv.getAnnotationMirrors(), config)) {
       return null;
     }
     return inferenceVar;
@@ -3325,7 +3410,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
     return !isKnownNullable(t)
         && !treatAsTypeVariableForInference(t)
         && (!(t instanceof TypeVar tv)
-            || Nullness.hasNonNullAnnotation(t.getAnnotationMirrors().stream(), config)
+            || Nullness.hasNonNullAnnotation(t.getAnnotationMirrors(), config)
             || (!GenericsUtils.upperBoundIsNullable(tv.asElement(), config, handler, state)
                 && !upperBoundAllowsNullable(tv.getUpperBound())));
   }

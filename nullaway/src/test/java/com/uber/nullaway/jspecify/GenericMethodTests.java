@@ -2796,6 +2796,60 @@ public class GenericMethodTests extends NullAwayTestsBase {
   }
 
   @Test
+  public void dependentDeclarationEdgePropagatesNullnessWithoutStructuredLowers() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static <T extends @Nullable Object, U extends T> T widen(U value) {
+                return value;
+              }
+              static void test() {
+                // A null literal constrains U's root without adding structured lower evidence.
+                var nullable = widen(null);
+                // BUG: Diagnostic contains: dereferenced expression
+                nullable.toString();
+                var nonNull = widen("value");
+                nonNull.toString();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void nestedDeclarationBoundsAcquireLowerEvidenceOnLaterPreparationPasses() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              static class Box<E extends @Nullable Object> {}
+              // T and U are visited before V, which initially owns all the lower evidence.
+              static <T extends @Nullable Object, U extends Box<T>, V extends Box<U>> T extract(
+                  V value) {
+                throw new RuntimeException();
+              }
+              static void test(Box<Box<@Nullable String>> nullable, Box<Box<String>> nonNull) {
+                var nullableResult = extract(nullable);
+                // BUG: Diagnostic contains: dereferenced expression
+                nullableResult.length();
+                var nonNullResult = extract(nonNull);
+                nonNullResult.length();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
   public void inheritedStructuredEvidenceReachesFixedPoint() {
     makeHelper()
         .addSourceLines(
@@ -2868,6 +2922,48 @@ public class GenericMethodTests extends NullAwayTestsBase {
                 var inferred = id(value);
                 takes(inferred);
                 new C<>(value);
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void unmarkedBoundOnlyVariablesPreserveReceiverInstantiations() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import java.util.List;
+            import org.jspecify.annotations.NonNull;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            import org.jspecify.annotations.NullUnmarked;
+            @NullMarked
+            class Test {
+              @NullUnmarked
+              static class Receiver<E> {
+                <T extends List<E>, U extends T, R extends Comparable<R>, D extends List<R>>
+                    @NonNull U probe(@NonNull U value) { return value; }
+              }
+              static void acceptsNonNull(List<String> values) {}
+              static void acceptsNullable(List<@Nullable String> values) {}
+              static void test(Receiver<@Nullable String> nullableReceiver,
+                  Receiver<String> nonNullReceiver, List<@Nullable String> nullableValues,
+                  List<String> nonNullValues) {
+                var nullable = nullableReceiver.probe(nullableValues);
+                acceptsNullable(nullable);
+                // BUG: Diagnostic contains: incompatible types
+                acceptsNonNull(nullable);
+                // BUG: Diagnostic contains: dereferenced expression
+                nullable.get(0).length();
+                var nonNull = nonNullReceiver.probe(nonNullValues);
+                acceptsNonNull(nonNull);
+                nonNull.get(0).length();
+                var again = nullableReceiver.probe(nullableValues);
+                acceptsNullable(again);
+                // BUG: Diagnostic contains: dereferenced expression
+                again.get(0).length();
               }
             }
             """)
