@@ -4,7 +4,6 @@ import com.google.errorprone.CompilationTestHelper;
 import com.uber.nullaway.NullAwayTestsBase;
 import com.uber.nullaway.generics.JSpecifyJavacConfig;
 import java.util.Arrays;
-import org.junit.Ignore;
 import org.junit.Test;
 
 public class JSpecifyLibraryModelsTests extends NullAwayTestsBase {
@@ -80,35 +79,88 @@ public class JSpecifyLibraryModelsTests extends NullAwayTestsBase {
   }
 
   @Test
-  public void optionalModelsApplyToEachReceiverInstantiation() {
+  public void optionalOrElseUsesFallbackNullness() {
     makeHelper()
         .addSourceLines(
             "Test.java",
             """
-            import java.util.List;
             import java.util.Optional;
             import org.jspecify.annotations.NullMarked;
             import org.jspecify.annotations.Nullable;
+
             @NullMarked
             class Test {
-              void test(Optional<String> strings, Optional<Integer> integers,
-                  Optional<List<@Nullable String>> lists) {
-                String string = strings.orElse(null);
-                // BUG: Diagnostic contains: dereferenced expression
-                string.length();
-                Integer integer = integers.orElse(null);
-                // BUG: Diagnostic contains: dereferenced expression
-                integer.intValue();
-                List<@Nullable String> values = lists.orElse(null);
-                if (values != null) {
-                  // BUG: Diagnostic contains: dereferenced expression
-                  values.get(0).length();
+              void test(Optional<String> optional, String nonNull, @Nullable String nullable) {
+                optional.orElse(nonNull).hashCode();
+                // BUG: Diagnostic contains: dereferenced expression 'optional.orElse(nullable)' is @Nullable
+                optional.orElse(nullable).hashCode();
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void getPropertyUsesDefaultValueNullness() {
+    checkGetPropertyDefaultValueNullness(makeHelper());
+  }
+
+  @Test
+  public void getPropertyUsesDefaultValueNullnessWithoutJdkModels() {
+    checkGetPropertyDefaultValueNullness(
+        makeTestHelperWithArgs(
+            JSpecifyJavacConfig.withJSpecifyModeArgs(
+                Arrays.asList(
+                    "-XepOpt:NullAway:OnlyNullMarked=true",
+                    "-XepOpt:NullAway:JSpecifyJDKModels=false"))));
+  }
+
+  /** Checks that both getProperty models use the default value's flow-sensitive nullness. */
+  private void checkGetPropertyDefaultValueNullness(CompilationTestHelper helper) {
+    helper
+        .addSourceLines(
+            "Test.java",
+            """
+            import java.util.Properties;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+
+            @NullMarked
+            class Test {
+              int systemPropertyWithLiteralDefault() {
+                String value = System.getProperty("user.home", "");
+                return value.length();
+              }
+
+              int propertiesPropertyWithLiteralDefault(Properties properties) {
+                String value = properties.getProperty("key", "");
+                return value.length();
+              }
+
+              void nonNullDefault(Properties properties, String defaultValue) {
+                System.getProperty("key", defaultValue).length();
+                properties.getProperty("key", defaultValue).length();
+              }
+
+              void nullDefault(Properties properties) {
+                // BUG: Diagnostic contains: dereferenced expression 'System.getProperty("key", null)' is @Nullable
+                System.getProperty("key", null).length();
+                // BUG: Diagnostic contains: dereferenced expression 'properties.getProperty("key", null)' is @Nullable
+                properties.getProperty("key", null).length();
+              }
+
+              void nullableDefault(Properties properties, @Nullable String defaultValue) {
+                // BUG: Diagnostic contains: dereferenced expression 'System.getProperty("key", defaultValue)' is @Nullable
+                System.getProperty("key", defaultValue).length();
+                // BUG: Diagnostic contains: dereferenced expression 'properties.getProperty("key", defaultValue)' is @Nullable
+                properties.getProperty("key", defaultValue).length();
+              }
+
+              void refinedDefault(Properties properties, @Nullable String defaultValue) {
+                if (defaultValue != null) {
+                  System.getProperty("key", defaultValue).length();
+                  properties.getProperty("key", defaultValue).length();
                 }
-                strings.get().length();
-                integers.get().intValue();
-                String again = strings.orElse(null);
-                // BUG: Diagnostic contains: dereferenced expression
-                again.length();
               }
             }
             """)
@@ -134,7 +186,6 @@ public class JSpecifyLibraryModelsTests extends NullAwayTestsBase {
         .doTest();
   }
 
-  @Ignore("https://github.com/uber/NullAway/issues/1616")
   @Test
   public void optionalOrElseGet() {
     makeHelper()
@@ -148,6 +199,8 @@ public class JSpecifyLibraryModelsTests extends NullAwayTestsBase {
             @NullMarked
             class Test {
               void orElseGetReturnsNullable(Optional<String> value) {
+                value.orElseGet(() -> "fallback").hashCode();
+
                 // BUG: Diagnostic contains: dereferenced expression 'value.orElseGet(() -> null)' is @Nullable
                 value.orElseGet(() -> null).hashCode();
               }
@@ -188,6 +241,42 @@ public class JSpecifyLibraryModelsTests extends NullAwayTestsBase {
             public record Repro(@Nullable String name) {
               public Optional<String> getNameOpt() {
                 return Optional.ofNullable(name).filter(it -> true);
+              }
+            }
+            """)
+        .doTest();
+  }
+
+  @Test
+  public void optionalModelsApplyToEachReceiverInstantiation() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            """
+            import java.util.List;
+            import java.util.Optional;
+            import org.jspecify.annotations.NullMarked;
+            import org.jspecify.annotations.Nullable;
+            @NullMarked
+            class Test {
+              void test(Optional<String> strings, Optional<Integer> integers,
+                  Optional<List<@Nullable String>> lists) {
+                String string = strings.orElse(null);
+                // BUG: Diagnostic contains: dereferenced expression
+                string.length();
+                Integer integer = integers.orElse(null);
+                // BUG: Diagnostic contains: dereferenced expression
+                integer.intValue();
+                List<@Nullable String> values = lists.orElse(null);
+                if (values != null) {
+                  // BUG: Diagnostic contains: dereferenced expression
+                  values.get(0).length();
+                }
+                strings.get().length();
+                integers.get().intValue();
+                String again = strings.orElse(null);
+                // BUG: Diagnostic contains: dereferenced expression
+                again.length();
               }
             }
             """)
