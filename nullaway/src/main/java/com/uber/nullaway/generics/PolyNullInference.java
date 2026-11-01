@@ -289,7 +289,7 @@ final class PolyNullInference {
     private final Set<Tree> foreignSites = new LinkedHashSet<>();
     private final Set<InferenceVariable> opaqueVariables = new LinkedHashSet<>();
 
-    private record ScalarConstraint(Type subtype, Type supertype) {}
+    private record ScalarConstraint(Type subtype, Type supertype, @Nullable SourceOrigin origin) {}
 
     Solver(ConstraintSolver delegate, VisitorState state, Config config, Handler handler) {
       this.delegate = delegate;
@@ -392,7 +392,13 @@ final class PolyNullInference {
 
     @Override
     public void addSubtypeConstraint(Type subtype, Type supertype, boolean localVariableType) {
-      reduce(subtype, supertype, localVariableType, new IdentityHashMap<>());
+      reduce(subtype, supertype, localVariableType, null, new IdentityHashMap<>());
+    }
+
+    @Override
+    public void addSubtypeConstraint(
+        Type subtype, Type supertype, boolean localVariableType, SourceOrigin origin) {
+      reduce(subtype, supertype, localVariableType, origin, new IdentityHashMap<>());
     }
 
     /**
@@ -416,9 +422,17 @@ final class PolyNullInference {
      * Reduces only relations containing PolyNull; all other relations retain full solver semantics.
      */
     private void reduce(
-        Type subtype, Type supertype, boolean local, IdentityHashMap<Type, Set<Type>> active) {
+        Type subtype,
+        Type supertype,
+        boolean local,
+        @Nullable SourceOrigin origin,
+        IdentityHashMap<Type, Set<Type>> active) {
       if (!containsPoly(subtype) && !containsPoly(supertype)) {
-        delegate.addSubtypeConstraint(subtype, supertype, local);
+        if (origin == null) {
+          delegate.addSubtypeConstraint(subtype, supertype, local);
+        } else {
+          delegate.addSubtypeConstraint(subtype, supertype, local, origin);
+        }
         return;
       }
       Set<Type> targets =
@@ -435,7 +449,7 @@ final class PolyNullInference {
                 && (supertype instanceof Type.WildcardType
                     || GenericsUtils.asWildcard(subtype) != null))) {
           if (!local) {
-            scalarConstraints.add(new ScalarConstraint(subtype, supertype));
+            scalarConstraints.add(new ScalarConstraint(subtype, supertype, origin));
             InferenceVariable lower = variableForUse(subtype);
             InferenceVariable upper = variableForUse(supertype);
             if (delegate.hasExternalInputDependency(subtype)
@@ -456,16 +470,17 @@ final class PolyNullInference {
             Type actual = GenericsUtils.asWildcard(subtype);
             if (actual instanceof Type.WildcardType actualWildcard) {
               if (actualWildcard.kind == BoundKind.SUPER) {
-                reduce(wildcard.type, actualWildcard.type, false, active);
+                reduce(wildcard.type, actualWildcard.type, false, origin, active);
               }
             } else {
-              reduce(wildcard.type, subtype, false, active);
+              reduce(wildcard.type, subtype, false, origin, active);
             }
           } else {
             reduce(
                 GenericsUtils.effectiveWildcardUpperBound(subtype, state, config, handler),
                 GenericsUtils.wildcardUpperBound(wildcard, state, config, handler),
                 false,
+                origin,
                 active);
           }
         } else if (config.handleWildcardGenerics() && GenericsUtils.asWildcard(subtype) != null) {
@@ -476,14 +491,25 @@ final class PolyNullInference {
                   : GenericsUtils.wildcardUpperBound(wildcard, state, config, handler),
               supertype,
               false,
+              origin,
               active);
         } else if (subtype instanceof Type.TypeVar && shapes.containsKey(subtype.asElement())) {
-          reduce(Objects.requireNonNull(shapes.get(subtype.asElement())), supertype, local, active);
+          reduce(
+              Objects.requireNonNull(shapes.get(subtype.asElement())),
+              supertype,
+              local,
+              origin,
+              active);
         } else if (supertype instanceof Type.TypeVar && shapes.containsKey(supertype.asElement())) {
-          reduce(subtype, Objects.requireNonNull(shapes.get(supertype.asElement())), local, active);
+          reduce(
+              subtype,
+              Objects.requireNonNull(shapes.get(supertype.asElement())),
+              local,
+              origin,
+              active);
         } else if (subtype instanceof Type.ArrayType lower
             && supertype instanceof Type.ArrayType upper) {
-          reduce(lower.elemtype, upper.elemtype, false, active);
+          reduce(lower.elemtype, upper.elemtype, false, origin, active);
         } else if (subtype instanceof Type.ClassType && supertype instanceof Type.ClassType upper) {
           Type aligned =
               TypeSubstitutionUtils.asSuper(
@@ -496,18 +522,18 @@ final class PolyNullInference {
           for (int i = 0; i < lowerArguments.size() && i < upperArguments.size(); i++) {
             Type lower = lowerArguments.get(i);
             Type higher = upperArguments.get(i);
-            reduce(lower, higher, false, active);
+            reduce(lower, higher, false, origin, active);
             if (!config.handleWildcardGenerics()
                 || (!(higher instanceof Type.WildcardType)
                     && GenericsUtils.asWildcard(lower) == null)) {
-              reduce(higher, lower, false, active);
+              reduce(higher, lower, false, origin, active);
             }
           }
           if (aligned.getEnclosingType() instanceof Type.ClassType enclosing
               && upper.getEnclosingType() instanceof Type.ClassType upperEnclosing
               && !enclosing.isRaw()
               && !upperEnclosing.isRaw()) {
-            reduce(enclosing, upperEnclosing, false, active);
+            reduce(enclosing, upperEnclosing, false, origin, active);
           }
         } else {
           // An unavailable Java shape cannot certify the corresponding qualifier projection.
@@ -560,10 +586,10 @@ final class PolyNullInference {
                           || !GenericsUtils.upperBoundIsNullable(
                               variable.asElement(), config, handler, state));
           if (nullable && upper != null) {
-            force(upper, Nullness.NULLABLE);
+            force(upper, Nullness.NULLABLE, constraint.origin());
           }
           if (nonnull && lower != null) {
-            force(lower, Nullness.NONNULL);
+            force(lower, Nullness.NONNULL, constraint.origin());
           }
         }
       } while (forced.size() != previous);
@@ -572,7 +598,8 @@ final class PolyNullInference {
     /**
      * Imposes a root fact on the variable itself, never on an unrelated carrier's nominal shape.
      */
-    private void force(InferenceVariable variable, Nullness nullness) {
+    private void force(
+        InferenceVariable variable, Nullness nullness, @Nullable SourceOrigin origin) {
       Nullness previous = forced.putIfAbsent(variable, nullness);
       if (previous != null) {
         if (previous != nullness) {
@@ -590,7 +617,11 @@ final class PolyNullInference {
                   : GenericsChecks.getSyntheticNonNullAnnotType(state));
       Type lower = nullness == Nullness.NULLABLE ? annotated : fresh;
       Type upper = nullness == Nullness.NULLABLE ? fresh : annotated;
-      delegate.addSubtypeConstraint(lower, upper, false);
+      if (origin == null) {
+        delegate.addSubtypeConstraint(lower, upper, false);
+      } else {
+        delegate.addSubtypeConstraint(lower, upper, false, origin);
+      }
     }
 
     /** Carries uncertified or foreign scalar dependencies across linked qualifier occurrences. */
@@ -628,7 +659,12 @@ final class PolyNullInference {
       Set<InferenceVariable> inconsistent = new LinkedHashSet<>(solution.inconsistentVariables());
       propagateStatus(incomplete);
       propagateStatus(inconsistent);
-      return new Solution(solution.inferredTypes(), incomplete, inconsistent, inputDependencies());
+      return new Solution(
+          solution.inferredTypes(),
+          incomplete,
+          inconsistent,
+          solution.lowerConflicts(),
+          inputDependencies());
     }
   }
 
