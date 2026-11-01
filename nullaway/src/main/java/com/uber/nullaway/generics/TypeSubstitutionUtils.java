@@ -252,6 +252,40 @@ public class TypeSubstitutionUtils {
   }
 
   /**
+   * Applies supported full substitutions before the scalar fallback. Substitution preserves
+   * explicit occurrence overrides, and annotation restoration retains the target's javac-attributed
+   * Java structure. Variables absent from {@code inferredTypes} keep the existing scalar behavior.
+   */
+  static Type updateTypeWithInferredTypes(
+      Type typeToUpdate,
+      Type origType,
+      @Nullable Map<Element, ConstraintSolver.InferredNullability> typeVarNullability,
+      Map<Element, Type> inferredTypes,
+      VisitorState state,
+      Config config) {
+    Type substituted = substituteTypeVariables(origType, inferredTypes, state.getTypes(), config);
+    return updateTypeWithInferredNullability(
+        typeToUpdate, substituted, typeVarNullability, state, config);
+  }
+
+  /**
+   * Applies full substitutions to a method declaration, with scalar fallback for unsupported
+   * variables.
+   */
+  static Type.MethodType updateMethodTypeWithInferredTypes(
+      Type.MethodType typeToUpdate,
+      Type.MethodType origType,
+      Map<Element, ConstraintSolver.InferredNullability> typeVarNullability,
+      Map<Element, Type> inferredTypes,
+      VisitorState state,
+      Config config) {
+    Type.MethodType substituted =
+        substituteTypeVariables(origType, inferredTypes, state.getTypes(), config).asMethodType();
+    return updateMethodTypeWithInferredNullability(
+        typeToUpdate, substituted, typeVarNullability, state, config);
+  }
+
+  /**
    * Updates a method type {@code typeToUpdate} by applying inferred nullability for type variables.
    * The update is applied to the argument types, return type, and thrown types of the method type,
    * using {@link #updateMethodTypeWithInferredNullability(Type.MethodType, Type.MethodType, Map,

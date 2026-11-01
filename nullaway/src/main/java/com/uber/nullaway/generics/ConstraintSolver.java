@@ -38,8 +38,9 @@ public interface ConstraintSolver {
    * retain the original declaration for library-modeled bound nullability, even when a separate
    * inference problem treats the fresh variables as fixed types.
    *
-   * <p>Register each site once per inference problem. Constraint generation visits each call or
-   * method-reference tree once; separate inference problems use separate solvers.
+   * <p>Re-registering a site with the same declarations returns its existing fresh variables and
+   * retains all constraints. Contextual views such as a PolyNull overlay may revisit a call; each
+   * view must still add its constraints. Separate inference problems use separate solvers.
    *
    * @param site the tree whose type arguments are inferred
    * @param typeVariables the declared type variables inferred at {@code site}
@@ -47,6 +48,35 @@ public interface ConstraintSolver {
    */
   Map<Element, Type.TypeVar> registerInferenceVariables(
       Tree site, List<? extends Element> typeVariables);
+
+  /**
+   * Registers variables with javac's nominal instantiations. The instantiations supply Java shapes,
+   * not nullness evidence. Solvers without full-type support retain their scalar behavior.
+   *
+   * @param site the inference site
+   * @param typeVariables the declared variables inferred at the site
+   * @param javacInstantiations attributed type arguments, keyed by declared variable
+   * @return the fresh inference variables
+   */
+  default Map<Element, Type.TypeVar> registerInferenceVariables(
+      Tree site, List<? extends Element> typeVariables, Map<Element, Type> javacInstantiations) {
+    return registerInferenceVariables(site, typeVariables);
+  }
+
+  /**
+   * Returns full annotated substitutions for variables supported by this solver. Call after {@link
+   * #solve()}; its scalar solution remains authoritative for top-level nullness. An absent entry
+   * requests scalar fallback, not a substitution based on javac's provisional annotations.
+   *
+   * <p>This capability need not cover every variable, even within a single inference problem.
+   *
+   * @param nullability the scalar solution
+   * @return supported substitutions, keyed by their call-specific inference variables
+   */
+  default Map<InferenceVariable, Type> solveFullTypes(
+      Map<InferenceVariable, InferredNullability> nullability) {
+    return Map.of();
+  }
 
   /**
    * Exception thrown when the constraints added to the solver are determined to be unsatisfiable.

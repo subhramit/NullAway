@@ -39,6 +39,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   private final Config config;
   private final Handler handler;
   private final VisitorState state;
+  private final FullTypeBounds fullTypeBounds;
 
   /**
    * Maps the symbol of each fresh type variable created by {@link #registerInferenceVariables(Tree,
@@ -48,10 +49,18 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   private final IdentityHashMap<Element, InferenceVariable> inferenceVariables =
       new IdentityHashMap<>();
 
+  /**
+   * Stable bindings for sites revisited under another contextual view, such as a PolyNull overlay.
+   * Re-registration must not replace fresh symbols or discard already collected bounds.
+   */
+  private final IdentityHashMap<Tree, Map<Element, Type.TypeVar>> freshVariablesBySite =
+      new IdentityHashMap<>();
+
   public ConstraintSolverImpl(Config config, VisitorState state, NullAway analysis) {
     this.config = config;
     this.handler = analysis.getHandler();
     this.state = state;
+    this.fullTypeBounds = new FullTypeBounds(config, state);
   }
 
   /* ───────────────────── internal enums & data ───────────────────── */
@@ -96,6 +105,13 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
   @Override
   public Map<Element, Type.TypeVar> registerInferenceVariables(
       Tree site, List<? extends Element> typeVariables) {
+    Map<Element, Type.TypeVar> existing = freshVariablesBySite.get(site);
+    if (existing != null) {
+      Verify.verify(
+          existing.keySet().equals(new LinkedHashSet<>(typeVariables)),
+          "Repeated inference registration must use the same declarations");
+      return existing;
+    }
 
     // First create all the fresh type variables, since the upper bound of one type variable can
     // refer to others, e.g., <T extends Comparable<T>> or <T, U extends T>.
@@ -120,7 +136,26 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
       inferenceVariables.put(entry.getValue().tsym, new InferenceVariable(entry.getKey(), site));
     }
 
+    fullTypeBounds.register(site, fresh);
+    freshVariablesBySite.put(site, fresh);
     return fresh;
+  }
+
+  /**
+   * Registers scalar variables first, then attaches shapes for the optional full-type capability.
+   */
+  @Override
+  public Map<Element, Type.TypeVar> registerInferenceVariables(
+      Tree site, List<? extends Element> typeVariables, Map<Element, Type> javacInstantiations) {
+    Map<Element, Type.TypeVar> fresh = registerInferenceVariables(site, typeVariables);
+    fullTypeBounds.setShapes(site, javacInstantiations);
+    return fresh;
+  }
+
+  @Override
+  public Map<InferenceVariable, Type> solveFullTypes(
+      Map<InferenceVariable, InferredNullability> nullability) {
+    return fullTypeBounds.solve(nullability);
   }
 
   @Override
@@ -150,6 +185,7 @@ public final class ConstraintSolverImpl implements ConstraintSolver {
         constrainSubtypeToWildcard(subtype, supertypeWildcard);
         return null;
       }
+      fullTypeBounds.addConstraint(subtype, supertype);
       // handle flow into a type variable. The check for !(subtype instanceof TypeVar) is a
       // small optimization, as that case should be handled in visitTypeVar.
       if (!localVariableType && (supertype instanceof TypeVar) && !(subtype instanceof TypeVar)) {

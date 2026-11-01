@@ -98,6 +98,9 @@ public final class GenericsChecks {
     private final IdentityHashMap<Tree, Map<Element, ConstraintSolver.InferredNullability>>
         typeVarNullabilityBySite = new IdentityHashMap<>();
 
+    private final IdentityHashMap<Tree, Map<Element, Type>> fullTypesBySite =
+        new IdentityHashMap<>();
+
     private final IdentityHashMap<MethodInvocationTree, Nullness> polyNullnessByInvocation;
 
     /**
@@ -105,10 +108,12 @@ public final class GenericsChecks {
      * type variable map.
      *
      * @param solution the inferred nullability of every inference variable in the problem
+     * @param fullTypes supported full annotated substitutions; absent variables use scalar fallback
      * @param polyNullnessByInvocation the PolyNull nullness inferred for each modeled invocation
      */
     private InferenceSuccess(
         Map<ConstraintSolver.InferenceVariable, ConstraintSolver.InferredNullability> solution,
+        Map<ConstraintSolver.InferenceVariable, Type> fullTypes,
         IdentityHashMap<MethodInvocationTree, Nullness> polyNullnessByInvocation) {
       this.polyNullnessByInvocation = polyNullnessByInvocation;
       solution.forEach(
@@ -116,6 +121,16 @@ public final class GenericsChecks {
               typeVarNullabilityBySite
                   .computeIfAbsent(inferenceVar.site(), unused -> new LinkedHashMap<>())
                   .put(inferenceVar.typeVariable(), nullability));
+      fullTypes.forEach(
+          (variable, type) ->
+              fullTypesBySite
+                  .computeIfAbsent(variable.site(), unused -> new LinkedHashMap<>())
+                  .put(variable.typeVariable(), type));
+    }
+
+    /** Returns full substitutions available at this site, independently of scalar inference. */
+    Map<Element, Type> fullTypesForSite(Tree site) {
+      return fullTypesBySite.getOrDefault(site, Map.of());
     }
 
     /**
@@ -1387,11 +1402,18 @@ public final class GenericsChecks {
     if (result instanceof InferenceSuccess successResult) {
       typeVarNullability = successResult.typeVarNullabilityForSite(callTree);
     }
+    Map<Element, Type> fullTypes =
+        result instanceof InferenceSuccess success ? success.fullTypesForSite(callTree) : Map.of();
     Type typeAtCallSite = castToNonNull(ASTHelpers.getType(callTree));
     if (callTree instanceof MethodInvocationTree invocationTree) {
       Type inferredCallType =
-          TypeSubstitutionUtils.updateTypeWithInferredNullability(
-              typeAtCallSite, executableType.getReturnType(), typeVarNullability, state, config);
+          TypeSubstitutionUtils.updateTypeWithInferredTypes(
+              typeAtCallSite,
+              executableType.getReturnType(),
+              typeVarNullability,
+              fullTypes,
+              state,
+              config);
       if (result instanceof InferenceSuccess successResult) {
         Nullness polyNullness = successResult.polyNullnessByInvocation.get(invocationTree);
         if (polyNullness != null) {
@@ -1467,7 +1489,9 @@ public final class GenericsChecks {
 
       InferenceSuccess successResult =
           new InferenceSuccess(
-              solution, PolyNullInference.resolveNullnessByInvocation(polyNullContexts, solution));
+              solution,
+              solver.solveFullTypes(solution),
+              PolyNullInference.resolveNullnessByInvocation(polyNullContexts, solution));
       Map<Element, ConstraintSolver.InferredNullability> typeVarNullability =
           successResult.typeVarNullabilityForSite(callTree);
       if (okToCacheInferenceResult(calledFromDataflow)) {
@@ -1496,10 +1520,11 @@ public final class GenericsChecks {
                       Type formalParamGroundTargetType =
                           GenericsUtils.groundTargetType(formalParamType, state, config, handler);
                       Type typeWithInferredNullability =
-                          TypeSubstitutionUtils.updateTypeWithInferredNullability(
+                          TypeSubstitutionUtils.updateTypeWithInferredTypes(
                               polyExprTreeType,
                               formalParamGroundTargetType,
                               typeVarNullability,
+                              successResult.fullTypesForSite(callTree),
                               state,
                               config);
                       inferredPolyExpressionTypes.put(argument, typeWithInferredNullability);
@@ -1664,8 +1689,18 @@ public final class GenericsChecks {
     if (polyNullContext != null) {
       typeParameters.add(polyNullContext.inferenceVariable().asElement());
     }
+    // Only method calls opt into full-type inference in this foundation. Constructors and generic
+    // method references retain scalar inference until their attributed shapes are integrated.
+    Map<Element, Type> javacInstantiations =
+        callTree instanceof MethodInvocationTree invocation
+            ? InferenceTypeShapes.inferInstantiations(
+                methodType,
+                castToNonNull(ASTHelpers.getType(invocation.getMethodSelect())),
+                typeParameters,
+                state.getTypes())
+            : Map.of();
     Map<Element, Type.TypeVar> inferenceVariables =
-        solver.registerInferenceVariables(callTree, typeParameters);
+        solver.registerInferenceVariables(callTree, typeParameters, javacInstantiations);
     Type.MethodType methodTypeForSite =
         (Type.MethodType)
             TypeSubstitutionUtils.substituteTypeVariables(
@@ -3568,7 +3603,11 @@ public final class GenericsChecks {
         // types. For diamond constructor arguments, that can re-enter method-type computation for
         // this same invocation while we are still repairing it. In that case, use the already
         // inferred method type and skip the repair on the recursive call.
-        if (!nestedNullabilityRepairInProgress.contains(invocationTree)) {
+        if (!forAllType.tvars.stream()
+                .allMatch(
+                    variable ->
+                        successResult.fullTypesForSite(invocationTree).containsKey(variable.tsym))
+            && !nestedNullabilityRepairInProgress.contains(invocationTree)) {
           nestedNullabilityRepairInProgress.add(invocationTree);
           try {
             methodTypeAtCallSite =
@@ -3584,10 +3623,11 @@ public final class GenericsChecks {
           }
         }
         substitutedMethodType =
-            TypeSubstitutionUtils.updateMethodTypeWithInferredNullability(
+            TypeSubstitutionUtils.updateMethodTypeWithInferredTypes(
                 methodTypeAtCallSite,
                 methodType,
                 successResult.typeVarNullabilityForSite(invocationTree),
+                successResult.fullTypesForSite(invocationTree),
                 state,
                 config);
         jointlyInferredPolyNullness = successResult.polyNullnessByInvocation.get(invocationTree);
